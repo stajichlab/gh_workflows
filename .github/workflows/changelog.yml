@@ -1,0 +1,13 @@
+name: Changelog
+
+# This repo only: require a changelog entry on pull requests, using this repo's own changelog_check.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  changelog:
+    uses: ./.github/workflows/changelog_check.yml
+    permissions:
+      contents: read

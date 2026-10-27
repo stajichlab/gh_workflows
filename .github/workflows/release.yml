@@ -1,0 +1,33 @@
+name: Release
+
+# This repo only: open a release pull request for gh_workflows itself, using its own release_prepare.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Version bump type"
+        required: true
+        type: choice
+        default: patch
+        options:
+          - major
+          - premajor
+          - minor
+          - preminor
+          - patch
+          - prepatch
+          - prerelease
+      preid:
+        description: "Prerelease identifier"
+        type: string
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/release_prepare.yml
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      bump_type: ${{ inputs.bump_type }}
+      preid: ${{ inputs.preid }}

@@ -28,4 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   artifacts and Codecov upload.
 - End-to-end tests for `release_prepare`, `release_publish`, `sync_dev`, `container_build`, `citation_check` and
   `python_test`, plus actionlint on every push and pull request.
+- Release workflows for this repo itself (`release.yml`, `publish.yml`, which also moves the `v<major>` tag callers
+  pin to) and a changelog check on its pull requests (`changelog.yml`).
 - Dependabot updates for the pinned GitHub Actions.

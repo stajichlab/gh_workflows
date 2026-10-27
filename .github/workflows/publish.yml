@@ -1,0 +1,48 @@
+name: Publish
+
+# This repo only: when a release/v* pull request is merged, tag it and create the GitHub release with this repo's own
+# release_publish, then move the v<major> tag that callers pin to (e.g. @v1).
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  publish:
+    if: github.event.pull_request.merged && startsWith(github.head_ref, 'release/v')
+    uses: ./.github/workflows/release_publish.yml
+    permissions:
+      contents: write
+
+  major-tag:
+    name: Move major version tag
+    needs: publish
+    if: needs.publish.outputs.published == 'true' && needs.publish.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Move v<major> to the new release
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+          TAG: ${{ needs.publish.outputs.tag }}
+        run: |
+          major="v${VERSION%%.*}"
+          git fetch -q --force origin "refs/tags/v*:refs/tags/v*"
+          # Only the newest stable release of this major version may hold the tag, so publishing an older patch
+          # (e.g. v1.2.5 after v1.3.0) leaves it alone
+          newest=$(git tag -l "${major}.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [ "$newest" != "$TAG" ]; then
+            echo "::notice::${TAG} is not the newest ${major} release (${newest}); leaving ${major} unchanged"
+            exit 0
+          fi
+          git tag -f "$major" "${TAG}^{commit}"
+          git push -f origin "refs/tags/${major}"
+          echo "Moved ${major} to ${TAG}" >> "$GITHUB_STEP_SUMMARY"

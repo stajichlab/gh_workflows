@@ -2,6 +2,27 @@
 
 Reusable GitHub Actions workflows for stajichlab repositories.
 
+## Workflows in this repo
+
+**Shared** (call these from other repos with
+`uses: stajichlab/gh_workflows/.github/workflows/<file>@v1`):
+
+| Workflow | Purpose |
+|---|---|
+| [`release_prepare`](#release_prepare) | Bump the version and open a release pull request |
+| [`release_publish`](#release_publish) | Tag a merged release PR and create the GitHub release |
+| [`sync_dev`](#sync_dev) | Merge the release into the development branch |
+| [`container_build`](#container_build) | Build, smoke-test and push a container image |
+| [`pixi_lock_refresh`](#pixi_lock_refresh) | Refresh `pixi.lock` on Dependabot PRs |
+| [`changelog_check`](#changelog_check) | Require a changelog entry on PRs |
+| [`citation_check`](#citation_check) | Validate `CITATION.cff` |
+| [`python_test`](#python_test) | Run Python tests with pip, conda or pixi |
+
+> [!NOTE]
+> **For this repo only, not for callers:** `release.yml`, `publish.yml`, `changelog.yml`, `lint.yml` and the
+> `test_*.yml` workflows. They have no `workflow_call` trigger, so other repos cannot call them. They release, check
+> and test `gh_workflows` itself; see [Releasing this repo](#releasing-this-repo) and [Development](#development).
+
 ## release_prepare
 
 Computes the next version from the latest `v*` tag, checks it against `CHANGELOG.md`
@@ -393,10 +414,28 @@ environment, or the pixi environment), so they see its packages and tools.
 ## Versioning
 
 Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to
-each new compatible release. Breaking changes get `v2`.
+each new compatible release automatically. Breaking changes get `v2`. Every release is listed in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Releasing this repo
+
+This repo releases itself with its own workflows (the repo-only callers below use `./.github/workflows/...`, so
+they always run the current code):
+
+1. Add an entry under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md) with every PR. `changelog.yml` enforces this
+   (label a PR `skip-changelog` if it needs none).
+2. Run **Actions → Release** (`release.yml`) with a bump type: `patch` for fixes, `minor` for new workflows or
+   inputs, `major` for breaking changes. It opens a `Release v<version>` PR.
+3. Review and merge the PR. `publish.yml` then tags `v<version>` and creates the GitHub release (via
+   `release_publish`), and a second job moves `v<major>` (e.g. `v1`) to it, so callers pinned to `@v1` get the
+   release. Prereleases, and a patch to an older minor version, leave `v<major>` where it is.
+
+The first release is `major` from no tags, giving `v1.0.0` and `v1`.
 
 ## Development
 
+- `release.yml`, `publish.yml` and `changelog.yml` run this repo's own releases and changelog check (see
+  [Releasing this repo](#releasing-this-repo)).
 - `lint.yml` runs [actionlint](https://github.com/rhysd/actionlint) on every push to `main` and every PR.
 - `test_release_prepare.yml` runs `release_prepare` end to end against a throwaway orphan branch with a `v0.1.0`
   tag, checks the release branch and the draft PR, then deletes the PR, branches and tag. It runs on pushes to
