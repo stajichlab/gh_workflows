@@ -1,0 +1,277 @@
+name: Prepare release
+
+# Reusable workflow: compute the next version from the latest v* tag, validate it against the Keep a Changelog file
+# (if present), bump the changelog, run the caller's version bump command, update CITATION.cff, then commit to a
+# release branch and open a pull request for review. Tagging and publishing are left to the caller.
+
+on:
+  workflow_call:
+    inputs:
+      bump_type:
+        description: "Version bump type (major, premajor, minor, preminor, patch, prepatch, prerelease)"
+        required: true
+        type: string
+      preid:
+        description: "Prerelease identifier"
+        required: false
+        type: string
+        default: ""
+      base_branch:
+        description: "Branch to cut the release from and target the pull request at"
+        required: false
+        type: string
+        default: main
+      changelog_path:
+        description: "Path to the changelog; optional, skipped if the file does not exist"
+        required: false
+        type: string
+        default: CHANGELOG.md
+      additional_bump_command:
+        description: "Shell command that bumps version strings in repo files; the new version is in $VERSION"
+        required: false
+        type: string
+        default: ""
+      draft:
+        description: "Open the release pull request as a draft"
+        required: false
+        type: boolean
+        default: false
+      reviewers:
+        description: "Comma-separated users or org/team slugs to request review from"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      token:
+        description: "Token used to push and open the pull request (GitHub App or PAT) so the PR triggers CI; defaults to GITHUB_TOKEN"
+        required: false
+    outputs:
+      version:
+        description: "New version"
+        value: ${{ jobs.prepare.outputs.version }}
+      previous_version:
+        description: "Previous version from the latest v* tag (empty if none)"
+        value: ${{ jobs.prepare.outputs.previous_version }}
+      release_notes:
+        description: "Changelog notes for the new version, or commit subjects if there is no changelog"
+        value: ${{ jobs.prepare.outputs.release_notes }}
+      prerelease:
+        description: "Whether this is a prerelease"
+        value: ${{ jobs.prepare.outputs.prerelease }}
+      pr_url:
+        description: "URL of the release pull request"
+        value: ${{ jobs.prepare.outputs.pr_url }}
+
+jobs:
+  prepare:
+    name: Update changelog and version
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-prepare
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      previous_version: ${{ steps.version.outputs.previous }}
+      release_notes: ${{ steps.notes.outputs.notes }}
+      prerelease: ${{ startsWith(inputs.bump_type, 'pre') }}
+      pr_url: ${{ steps.pr.outputs.url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.base_branch }}
+          token: ${{ secrets.token || github.token }}
+          # Full history and tags without old file contents (treeless clone)
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Compute version from tags
+        id: version
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          PREID: ${{ inputs.preid }}
+        run: |
+          case "$BUMP_TYPE" in
+            major|premajor|minor|preminor|patch|prepatch|prerelease) ;;
+            *)
+              echo "::error::Invalid bump_type '${BUMP_TYPE}'; expected one of major, premajor, minor, preminor, patch, prepatch, prerelease"
+              exit 1
+              ;;
+          esac
+
+          # Highest semver among v* tags reachable from the base branch; git's own version sort orders prereleases
+          # after their release
+          versions=$(git tag --list 'v*' --merged HEAD | sed 's/^v//')
+          previous=""
+          if [ -n "$versions" ]; then
+            previous=$(npx --yes semver@7.6.3 $versions | tail -n 1 || true)
+          fi
+          next=$(npx --yes semver@7.6.3 -i "$BUMP_TYPE" ${PREID:+--preid "$PREID"} "${previous:-0.0.0}")
+          echo "Previous: ${previous:-(none)}, next: $next"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Check release does not exist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "::error::Tag v${VERSION} already exists"
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "release/v${VERSION}" >/dev/null; then
+            echo "::error::Branch release/v${VERSION} already exists; close its pull request and delete it first"
+            exit 1
+          fi
+
+      - name: Get latest changelog version
+        id: changelog_latest
+        if: hashFiles(inputs.changelog_path) != ''
+        continue-on-error: true
+        uses: release-flow/keep-a-changelog-action@74931dec7ecdbfc8e38ac9ae7e8dd84c08db2f32 # v3.0.0
+        with:
+          command: query
+          version: latest
+          changelog: ${{ inputs.changelog_path }}
+
+      - name: Validate changelog against tags
+        if: hashFiles(inputs.changelog_path) != ''
+        env:
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+          CHANGELOG_LATEST: ${{ steps.changelog_latest.outputs.version }}
+          CHANGELOG: ${{ inputs.changelog_path }}
+        run: |
+          if [ "$PREVIOUS" != "$CHANGELOG_LATEST" ]; then
+            echo "::error::Latest release in ${CHANGELOG} (${CHANGELOG_LATEST:-none}) does not match latest tag (${PREVIOUS:+v}${PREVIOUS:-none})"
+            exit 1
+          fi
+
+      - name: Bump changelog version
+        if: hashFiles(inputs.changelog_path) != ''
+        uses: release-flow/keep-a-changelog-action@74931dec7ecdbfc8e38ac9ae7e8dd84c08db2f32 # v3.0.0
+        with:
+          command: bump
+          version: ${{ steps.version.outputs.version }}
+          changelog: ${{ inputs.changelog_path }}
+          keep-unreleased-section: true
+          fail-on-empty-release-notes: true
+
+      - name: Get changelog release notes
+        id: changelog_notes
+        if: hashFiles(inputs.changelog_path) != ''
+        uses: release-flow/keep-a-changelog-action@74931dec7ecdbfc8e38ac9ae7e8dd84c08db2f32 # v3.0.0
+        with:
+          command: query
+          version: ${{ steps.version.outputs.version }}
+          changelog: ${{ inputs.changelog_path }}
+
+      - name: Collect release notes
+        id: notes
+        env:
+          CHANGELOG_NOTES: ${{ steps.changelog_notes.outputs.release-notes }}
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+        run: |
+          if [ -n "$CHANGELOG_NOTES" ]; then
+            notes="$CHANGELOG_NOTES"
+          else
+            notes=$(git log --no-merges --pretty='- %s (%h)' ${PREVIOUS:+"v${PREVIOUS}..HEAD"})
+          fi
+          delim="EOF_$(openssl rand -hex 8)"
+          printf 'notes<<%s\n%s\n%s\n' "$delim" "$notes" "$delim" >> "$GITHUB_OUTPUT"
+
+      - name: Additional version bump command
+        if: inputs.additional_bump_command != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ADDITIONAL_BUMP_COMMAND: ${{ inputs.additional_bump_command }}
+        run: bash -euo pipefail -c "$ADDITIONAL_BUMP_COMMAND"
+
+      - name: Bump citation
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -f CITATION.cff ]; then
+            today=$(date -u +%Y-%m-%d)
+            sed -i "s/^version: .*/version: $VERSION/" CITATION.cff
+            sed -i "s/^date-released: .*/date-released: '$today'/" CITATION.cff
+            if ! grep -q "^version: $VERSION$" CITATION.cff; then
+              echo "::error::CITATION.cff has no top-level 'version:' line to update"
+              exit 1
+            fi
+            if ! grep -q "^date-released: '$today'$" CITATION.cff; then
+              echo "::error::CITATION.cff has no top-level 'date-released:' line to update"
+              exit 1
+            fi
+          else
+            echo "::warning::CITATION.cff not found; skipping citation bump"
+          fi
+
+      - name: Commit and push release branch
+        id: push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "release/v${VERSION}"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::error::Nothing to commit: no changelog, CITATION.cff or additional_bump_command changes"
+            exit 1
+          fi
+          git commit -m "Release v${VERSION}"
+          git push origin "release/v${VERSION}"
+
+      - name: Open pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          PREID: ${{ inputs.preid }}
+          BASE: ${{ inputs.base_branch }}
+          CHANGELOG: ${{ inputs.changelog_path }}
+          NOTES: ${{ steps.notes.outputs.notes }}
+          DRAFT: ${{ inputs.draft }}
+          REVIEWERS: ${{ inputs.reviewers }}
+        run: |
+          bump="from ${PREVIOUS:+v}${PREVIOUS:-(no previous tag)} to v${VERSION}"
+          if [[ "$BUMP_TYPE" == pre* && -n "$PREID" ]]; then
+            bump+=" (${PREID})"
+          fi
+          bump+=" (${BUMP_TYPE})"
+          if [ -f "$CHANGELOG" ]; then changelog="\`${CHANGELOG}\`"; else changelog=false; fi
+          if [ -f CITATION.cff ]; then citation=exist; else citation="not found"; fi
+
+          body=$(cat <<BODY
+          - **Version bump:** ${bump}
+          - **Base branch:** \`${BASE}\`
+          - **Changelog:** ${changelog}
+          - **CITATION.cff:** ${citation}
+
+          ## Changelog
+
+          ${NOTES}
+          BODY
+          )
+
+          args=()
+          if [ "$DRAFT" = true ]; then args+=(--draft); fi
+          if [ -n "$REVIEWERS" ]; then args+=(--reviewer "$REVIEWERS"); fi
+
+          url=$(gh pr create --base "$BASE" --head "release/v${VERSION}" \
+            --title "Release v${VERSION}" --body "$body" "${args[@]}")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Release PR: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete release branch after failure
+        # Lets the run be retried without first deleting the branch by hand
+        if: failure() && steps.push.outcome == 'success'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: git push origin --delete "release/v${VERSION}"

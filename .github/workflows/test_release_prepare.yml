@@ -1,0 +1,124 @@
+name: Test release_prepare
+
+# End-to-end test: build a throwaway base branch (orphan, so only its own tag is reachable) with a changelog,
+# CITATION.cff and a v0.1.0 tag, run release_prepare against it, check the result, then delete everything it created.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release_prepare.yml
+      - .github/workflows/test_release_prepare.yml
+
+concurrency:
+  group: test-release-prepare
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  BASE: test/release-prepare-${{ github.run_id }}
+  PREVIOUS_TAG: v0.1.0
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      base: ${{ steps.fixture.outputs.base }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create fixture branch and tag
+        id: fixture
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$BASE"
+          cat > CHANGELOG.md <<'MD'
+          # Changelog
+
+          ## [Unreleased]
+
+          ### Added
+
+          - Test entry
+
+          ## [0.1.0] - 2026-01-01
+
+          ### Added
+
+          - Initial release
+          MD
+          cat > CITATION.cff <<'CFF'
+          cff-version: 1.2.0
+          title: release_prepare test
+          version: 0.1.0
+          date-released: '2026-01-01'
+          CFF
+          git add CHANGELOG.md CITATION.cff
+          git commit -m "Test fixture"
+          git tag "$PREVIOUS_TAG"
+          git push origin "$BASE" "$PREVIOUS_TAG"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+  prepare:
+    needs: setup
+    uses: ./.github/workflows/release_prepare.yml
+    with:
+      bump_type: minor
+      base_branch: ${{ needs.setup.outputs.base }}
+      draft: true
+      # Creates a new file, which checks that untracked files are committed
+      additional_bump_command: echo "$VERSION" > VERSION
+
+  verify:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check outputs, branch contents and PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PREVIOUS: ${{ needs.prepare.outputs.previous_version }}
+          PR_URL: ${{ needs.prepare.outputs.pr_url }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          [ "$PREVIOUS" = 0.1.0 ] || fail "previous_version is '$PREVIOUS', expected 0.1.0"
+          [ "$VERSION" = 0.2.0 ] || fail "version is '$VERSION', expected 0.2.0"
+
+          git fetch origin "release/v${VERSION}"
+          branch="origin/release/v${VERSION}"
+          [ "$(git show "$branch:VERSION")" = 0.2.0 ] || fail "VERSION file not committed or wrong"
+          git show "$branch:CITATION.cff" | grep -q '^version: 0.2.0$' || fail "CITATION.cff version not bumped"
+          git show "$branch:CHANGELOG.md" | grep -q '^## \[0.2.0\]' || fail "CHANGELOG.md not bumped"
+
+          body=$(gh pr view "$PR_URL" --json body,isDraft --jq '.body')
+          grep -qF 'from v0.1.0 to v0.2.0 (minor)' <<<"$body" || fail "PR body missing version bump line"
+          grep -qF 'Test entry' <<<"$body" || fail "PR body missing changelog notes"
+          [ "$(gh pr view "$PR_URL" --json isDraft --jq .isDraft)" = true ] || fail "PR is not a draft"
+
+  cleanup:
+    needs: [setup, prepare, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete test PR, branches and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_URL: ${{ needs.prepare.outputs.pr_url }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          if [ -n "$PR_URL" ]; then gh pr close "$PR_URL" --repo "$REPO" || true; fi
+          for ref in "heads/release/v${VERSION}" "heads/${BASE}" "tags/${PREVIOUS_TAG}"; do
+            gh api -X DELETE "repos/${REPO}/git/refs/${ref}" || true
+          done
