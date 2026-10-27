@@ -41,6 +41,47 @@ The workflow also fails early if the tag or the `release/v<version>` branch alre
 The version bump is supplied by the caller through `additional_bump_command`, so each repo decides which files carry the
 version. The new version is available as `$VERSION`.
 
+### Use it when
+
+- You want releases to go through a reviewed pull request instead of tagging by hand.
+- The version should come from git tags, with `CHANGELOG.md` and `CITATION.cff` kept in step automatically.
+- Each repo stores its version somewhere different (`pyproject.toml`, `__init__.py`, an R `DESCRIPTION` file, ...)
+  and needs its own small bump command.
+- You publish release candidates (`1.3.0-rc.0`) before a final release, or patch an older release line.
+
+### Examples
+
+**Minimal: manual release with a bump-type menu.** Run it from **Actions → Release**; it opens a
+`Release v<version>` PR.
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: Version bump type
+        type: choice
+        options: [patch, minor, major, prepatch, preminor, premajor, prerelease]
+      preid:
+        description: Prerelease identifier (e.g. rc)
+        type: string
+
+jobs:
+  prepare:
+    uses: stajichlab/gh_workflows/.github/workflows/release_prepare.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      bump_type: ${{ inputs.bump_type }}
+      preid: ${{ inputs.preid }}
+```
+
+**Python package with a fallback version in `pyproject.toml`** (as in Phyling), with reviewers requested and a
+token so the release PR runs CI:
+
 ```yaml
 jobs:
   prepare:
@@ -56,8 +97,35 @@ jobs:
         sed -i "s/^default-version = .*/default-version = \"$VERSION\"/" pyproject.toml
         grep -q "^default-version = \"$VERSION\"" pyproject.toml
     secrets:
-      token: ${{ secrets.RELEASE_TOKEN }} # optional, see below
+      token: ${{ secrets.RELEASE_TOKEN }}
 ```
+
+**Version in several files** (a Python `__init__.py` and an R `DESCRIPTION`). Ending with `grep -q` checks makes
+the run fail if a file didn't contain the expected line:
+
+```yaml
+    with:
+      bump_type: ${{ inputs.bump_type }}
+      additional_bump_command: |
+        sed -i "s/^__version__ = .*/__version__ = \"$VERSION\"/" src/mytool/__init__.py
+        sed -i "s/^Version: .*/Version: $VERSION/" DESCRIPTION
+        grep -q "^__version__ = \"$VERSION\"" src/mytool/__init__.py
+        grep -q "^Version: $VERSION$" DESCRIPTION
+```
+
+**Patch an older release line** from a maintenance branch. Only tags on that branch count, so `patch` after
+`v1.4.2` gives `1.4.3` even if `main` is already at `2.x`:
+
+```yaml
+    with:
+      bump_type: patch
+      base_branch: v1.x
+```
+
+**Release candidates.** `preminor` with `preid: rc` turns `1.2.0` into `1.3.0-rc.0`. Later runs with
+`prerelease` give `1.3.0-rc.1`, and a final `patch` run gives `1.3.0`.
+
+### Reference
 
 | Input | Default | Description |
 |---|---|---|
@@ -98,15 +166,55 @@ never as the latest release. Files from an artifact built earlier in the calling
 It does nothing (and outputs `published: 'false'`) unless the triggering PR was merged from a `release/v*` branch,
 so it is safe to call on every closed PR.
 
+### Use it when
+
+- You use `release_prepare` and need the merged release PR turned into a tag and a GitHub release.
+- You want built files (an sdist, wheels, binaries) attached to the GitHub release.
+- Publishing should wait for a maintainer's approval.
+- A publish run failed partway and needs to be re-run by hand.
+
+### Examples
+
+**Minimal: tag and release on merge.** Safe to run on every closed PR; it only publishes merged `release/v*` PRs.
+
 ```yaml
+# .github/workflows/publish.yml
+name: Publish
 on:
   pull_request:
     types: [closed]
+    branches: [main]
 
 jobs:
-  build:   # repo-specific build and test; upload files with actions/upload-artifact
+  publish:
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    permissions:
+      contents: write
+```
+
+**Full pipeline: build, publish with files attached, then container and dev sync.** Repo-specific jobs (`build`)
+stay in the repo; shared ones are chained with `needs:` so they run after the tag exists.
+
+```yaml
+name: Publish
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  build:
     if: github.event.pull_request.merged && startsWith(github.head_ref, 'release/v')
-    ...
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
 
   publish:
     needs: build
@@ -114,12 +222,18 @@ jobs:
     permissions:
       contents: write
     with:
-      artifact: dist   # optional
+      artifact: dist
 
-  container:   # repo-specific, runs after the tag exists
+  container:
     needs: publish
     if: needs.publish.outputs.published == 'true'
-    ...
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      ref: ${{ needs.publish.outputs.tag }}
+      latest: true   # ignored for prereleases
 
   sync-dev:
     needs: publish
@@ -130,9 +244,42 @@ jobs:
       pull-requests: write
 ```
 
-To publish by hand (for example after a failed run), call it from a `workflow_dispatch` workflow with `version`
-and optionally `target`. If the tag already exists on the same commit it is reused; on a different commit the
-workflow fails.
+**Require approval before publishing.** Create a `release` environment with required reviewers under
+**Settings → Environments**, then:
+
+```yaml
+  publish:
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    permissions:
+      contents: write
+    with:
+      environment: release
+```
+
+**Re-publish by hand** after a failed run. Start it from `main` so the commit it runs on is the release commit (or
+pass `target`); the tag is reused if it already exists on that commit:
+
+```yaml
+# .github/workflows/publish-manual.yml
+name: Publish (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish (e.g. 1.3.0)
+        required: true
+
+jobs:
+  publish:
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    permissions:
+      contents: write
+    with:
+      version: ${{ inputs.version }}
+      delete_branch: false
+```
+
+### Reference
 
 | Input | Default | Description |
 |---|---|---|
@@ -163,10 +310,57 @@ is rejected (for example by branch protection on `dev`), it pushes `main`'s comm
 `sync/main-to-dev-<sha>` branch and opens a pull request into `dev` instead, so conflicts are resolved on that
 branch and never on `main`. Re-running while that PR is open reuses it.
 
+### Use it when
+
+- Your repo develops on `dev` (or `develop`) and releases from `main`, and `dev` should pick up the release commit
+  (version bump, changelog) right after each release.
+- Fixes made on `main` during a release must not be lost on `dev`.
+- `dev` is protected, so updates must arrive as a pull request.
+
+### Examples
+
+**After publishing (recommended).** Chain it after `release_publish` so it runs as soon as the release exists:
+
 ```yaml
+jobs:
+  publish:
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    permissions:
+      contents: write
+
+  sync-dev:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+**Different branch names, with reviewers for the fallback PR:**
+
+```yaml
+  sync-develop:
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      source_branch: master
+      target_branch: develop
+      reviewers: some-user
+```
+
+**On a published release, or by hand.** `release: published` only fires if the release was created with a token
+other than `GITHUB_TOKEN`:
+
+```yaml
+# .github/workflows/sync-dev.yml
+name: Sync dev
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   sync-dev:
@@ -176,8 +370,7 @@ jobs:
       pull-requests: write
 ```
 
-Or chain it after the publish job with `needs:`. A release created with the default `GITHUB_TOKEN` does not
-trigger `release: published` workflows.
+### Reference
 
 | Input | Default | Description |
 |---|---|---|
@@ -204,7 +397,17 @@ image, then pushes it (to GHCR by default). Tags:
 | `sha-<short sha>` | always |
 | extra tags | from `extra_tags` |
 
-Typical use is after `release_publish`, building from the new tag:
+### Use it when
+
+- Your tool ships a container image and every release should publish a matching, versioned image.
+- You want a test image from a branch without making a release.
+- PRs that touch the `Dockerfile` should prove the image still builds and runs, without pushing anything.
+- You need multi-architecture images or a registry other than GHCR.
+
+### Examples
+
+**Release image, after `release_publish`.** Tags `1.2.3`, `1.2`, `latest` and `sha-...`; a prerelease gets only its
+exact version:
 
 ```yaml
   container:
@@ -220,8 +423,73 @@ Typical use is after `release_publish`, building from the new tag:
       smoke_test_args: --help
 ```
 
-For a manual test image, call it from a `workflow_dispatch` workflow with `ref: ${{ github.ref_name }}`,
-`extra_tags: testing` and `push: false` (or `true`).
+**Test image from any branch, by hand:**
+
+```yaml
+# .github/workflows/container-test.yml
+name: Container (test image)
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to publish
+        default: testing
+
+jobs:
+  container:
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      ref: ${{ github.ref_name }}
+      extra_tags: ${{ inputs.tag }}
+      smoke_test_args: --help
+```
+
+**Build check on pull requests** (builds and smoke-tests, never pushes):
+
+```yaml
+# .github/workflows/container-check.yml
+name: Container check
+on:
+  pull_request:
+    paths: [Dockerfile, .dockerignore, pyproject.toml]
+
+jobs:
+  container:
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      push: false
+      smoke_test_args: --version
+```
+
+**Multi-architecture image on Docker Hub, with a build argument:**
+
+```yaml
+  container:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      ref: ${{ needs.publish.outputs.tag }}
+      image: docker.io/stajichlab/mytool
+      platforms: linux/amd64,linux/arm64
+      build_args: |
+        CONDA_ENV=environment.yml
+      latest: true
+    secrets:
+      registry_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      registry_password: ${{ secrets.DOCKERHUB_TOKEN }}
+```
+
+### Reference
 
 | Input | Default | Description |
 |---|---|---|
@@ -254,7 +522,19 @@ the lock file on the pull request branch and pushes it, so the PR stays installa
 It does nothing if the lock file is already current, and by default only acts on Dependabot PRs from the same
 repository.
 
+### Use it when
+
+- Your repo uses pixi with a committed `pixi.lock`, and Dependabot updates dependencies in `pyproject.toml` or
+  `pixi.toml`.
+- CI installs with `--locked` (as `python_test` does by default), so Dependabot PRs fail until the lock file is
+  regenerated.
+
+### Examples
+
+**Basic: refresh on Dependabot PRs.**
+
 ```yaml
+# .github/workflows/pixi-lock.yml
 name: Refresh pixi.lock
 on:
   pull_request:
@@ -266,6 +546,36 @@ jobs:
     permissions:
       contents: write   # Dependabot runs get a read-only token unless the caller grants write
 ```
+
+**Manifest in a subdirectory, pixi version pinned, and a token so CI re-runs on the lock-file commit** (store
+`PIXI_LOCK_TOKEN` under **Settings → Secrets and variables → Dependabot**):
+
+```yaml
+name: Refresh pixi.lock
+on:
+  pull_request:
+    paths: [analysis/pixi.toml]
+
+jobs:
+  refresh:
+    uses: stajichlab/gh_workflows/.github/workflows/pixi_lock_refresh.yml@v1
+    permissions:
+      contents: write
+    with:
+      working_directory: analysis
+      pixi_version: v0.50.0
+    secrets:
+      token: ${{ secrets.PIXI_LOCK_TOKEN }}
+```
+
+**Any same-repo PR, not just Dependabot** (for contributors who edit dependencies without re-locking):
+
+```yaml
+    with:
+      dependabot_only: false
+```
+
+### Reference
 
 | Input | Default | Description |
 |---|---|---|
@@ -293,7 +603,18 @@ never finds that section empty. It checks that the PR adds non-blank lines to th
 has content (which also catches a malformed changelog). Skipped for PRs labelled `skip-changelog`, PRs opened by
 Dependabot, and `release/v*` PRs.
 
+### Use it when
+
+- Your repo keeps a Keep a Changelog `CHANGELOG.md` and releases with `release_prepare`, which fails if
+  `[Unreleased]` is empty.
+- You want contributors to describe user-visible changes in the PR that makes them, not at release time.
+
+### Examples
+
+**Basic:**
+
 ```yaml
+# .github/workflows/changelog.yml
 name: Changelog
 on:
   pull_request:
@@ -304,8 +625,28 @@ jobs:
     uses: stajichlab/gh_workflows/.github/workflows/changelog_check.yml@v1
 ```
 
-Including `labeled` and `unlabeled` makes adding the skip label re-run the check. Create the `skip-changelog` label
-in each repo, and make the check required in branch protection if it should block merging.
+**Different file and label, more bots skipped, and only for PRs into `dev`:**
+
+```yaml
+name: Changelog
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  changelog:
+    uses: stajichlab/gh_workflows/.github/workflows/changelog_check.yml@v1
+    with:
+      changelog_path: docs/CHANGELOG.md
+      skip_label: no-changelog
+      skip_actors: "dependabot[bot] renovate[bot] pre-commit-ci[bot]"
+```
+
+Including `labeled` and `unlabeled` makes adding the skip label re-run the check. Create the skip label in each
+repo, and make the check required in branch protection if it should block merging.
+
+### Reference
 
 | Input | Default | Description |
 |---|---|---|
@@ -320,7 +661,20 @@ Validates `CITATION.cff` against the Citation File Format schema with
 differs from the latest `v*` tag on the base branch, or from the PR's version on a `release/v*` PR. Does nothing if
 the file doesn't exist, unless `required: true`.
 
+### Use it when
+
+- Your repo has a `CITATION.cff` (for GitHub's "Cite this repository" button or Zenodo archiving) and edits to it
+  should be checked before they merge.
+- You want an early warning that the citation version has drifted from the released version.
+
+`release_prepare` also validates the file at release time; this check catches problems in the PR that causes them.
+
+### Examples
+
+**Basic: check when the file changes.**
+
 ```yaml
+# .github/workflows/citation.yml
 name: Citation
 on:
   pull_request:
@@ -334,6 +688,23 @@ jobs:
     uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v1
 ```
 
+**Require the file**, for repos that must always be citable. It runs on every PR, so deleting the file is caught
+too:
+
+```yaml
+name: Citation
+on:
+  pull_request:
+
+jobs:
+  citation:
+    uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v1
+    with:
+      required: true
+```
+
+### Reference
+
 | Input | Default | Description |
 |---|---|---|
 | `ref` | triggering commit | Branch, tag or commit to check |
@@ -346,6 +717,44 @@ jobs:
 Runs a Python project's tests across a matrix, installing it with pip, conda (micromamba) or pixi. One workflow
 replaces separate per-installer CI workflows; call it once per installer. Optionally lints with ruff, puts
 externally built tools from artifacts on `PATH`, and uploads coverage to Codecov.
+
+### Use it when
+
+- Your repo is a Python package and needs tests on several Python versions.
+- You support more than one way to install (pip, conda/bioconda, pixi) and want to test each without keeping
+  separate CI files in step.
+- Tests need external command-line tools (aligners, tree builders) built or downloaded earlier in the run.
+
+### Examples
+
+**Simple pip package** (installs `-e .[dev]`, runs `pytest` on Python 3.10–3.14):
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+```
+
+**Linux and macOS, two Python versions, with ruff:**
+
+```yaml
+jobs:
+  test:
+    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    with:
+      runs_on: '["ubuntu-latest", "macos-latest"]'
+      python_versions: '["3.11", "3.13"]'
+      ruff: true
+```
+
+**All three installers, external tools and coverage** (Phyling's setup):
 
 ```yaml
 name: CI
@@ -387,6 +796,20 @@ jobs:
       pixi_environments: '["dev"]'
       setup_command: command -v astral && command -v fasttree && command -v iqtree
 ```
+
+**Several pixi environments** (for example one per Python version, defined in `pixi.toml`), running a pixi task:
+
+```yaml
+jobs:
+  test:
+    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    with:
+      installer: pixi
+      pixi_environments: '["py310", "py313"]'
+      test_command: pixi run test
+```
+
+### Reference
 
 `setup_command` and `test_command` run with bash inside the installed environment (the pip Python, the conda
 environment, or the pixi environment), so they see its packages and tools.
