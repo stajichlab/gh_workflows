@@ -1,0 +1,91 @@
+name: Check CITATION.cff
+
+# Reusable workflow: validate CITATION.cff against the Citation File Format schema with cffconvert, and warn if its
+# version differs from the latest v* tag on the base branch. Call it from a workflow triggered by pull_request (and
+# push to main) with a paths filter on CITATION.cff.
+
+on:
+  workflow_call:
+    inputs:
+      citation_path:
+        description: "Path to the citation file"
+        required: false
+        type: string
+        default: CITATION.cff
+      required:
+        description: "Fail if the citation file does not exist"
+        required: false
+        type: boolean
+        default: false
+      cffconvert_version:
+        description: "cffconvert version used for validation"
+        required: false
+        type: string
+        default: "2.0.0"
+
+jobs:
+  check:
+    name: Check CITATION.cff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Check file exists
+        id: exists
+        env:
+          CITATION: ${{ inputs.citation_path }}
+          REQUIRED: ${{ inputs.required }}
+        run: |
+          if [ -f "$CITATION" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif [ "$REQUIRED" = true ]; then
+            echo "::error::${CITATION} not found"
+            exit 1
+          else
+            echo "${CITATION} not found; nothing to check"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate against the CFF schema
+        if: steps.exists.outputs.exists == 'true'
+        env:
+          CITATION: ${{ inputs.citation_path }}
+          CFFCONVERT_VERSION: ${{ inputs.cffconvert_version }}
+        run: pipx run "cffconvert==${CFFCONVERT_VERSION}" --validate --infile "$CITATION"
+
+      - name: Compare version with latest tag
+        if: steps.exists.outputs.exists == 'true'
+        env:
+          CITATION: ${{ inputs.citation_path }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # On a PR, compare with tags on the branch it targets; otherwise with tags reachable from this commit
+          if [ -n "$BASE_REF" ]; then
+            git fetch -q origin "$BASE_REF"
+            from="origin/${BASE_REF}"
+          else
+            from=HEAD
+          fi
+          tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$from" 2>/dev/null || true)
+          # A release PR from release_prepare already carries the new version
+          if [[ "$HEAD_REF" == release/v* ]]; then
+            tag="${HEAD_REF#release/}"
+          fi
+          version=$(sed -n "s/^version:[[:space:]]*['\"]\{0,1\}\([^'\"[:space:]]*\)['\"]\{0,1\}[[:space:]]*$/\1/p" "$CITATION")
+          if [ -z "$tag" ]; then
+            echo "No v* tag yet; skipping version comparison"
+          elif [ -z "$version" ]; then
+            echo "::warning file=${CITATION}::No top-level 'version:' field; release_prepare cannot bump it"
+          elif [ "v${version}" != "$tag" ]; then
+            echo "::warning file=${CITATION}::version ${version} differs from latest tag ${tag}; release_prepare sets it at the next release"
+          else
+            echo "version ${version} matches ${tag}"
+          fi

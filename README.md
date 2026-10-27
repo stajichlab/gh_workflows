@@ -264,6 +264,60 @@ Outputs: `updated`.
 - Once someone else has pushed to a Dependabot branch, Dependabot stops rebasing it automatically. Comment
   `@dependabot recreate` to start over (the lock file is refreshed again on the new PR).
 
+## changelog_check
+
+Fails a pull request that doesn't add an entry under `[Unreleased]` in `CHANGELOG.md`, so `release_prepare`
+never finds that section empty. It checks that the PR adds non-blank lines to the changelog and that `[Unreleased]`
+has content (which also catches a malformed changelog). Skipped for PRs labelled `skip-changelog`, PRs opened by
+Dependabot, and `release/v*` PRs.
+
+```yaml
+name: Changelog
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  changelog:
+    uses: stajichlab/gh_workflows/.github/workflows/changelog_check.yml@v1
+```
+
+Including `labeled` and `unlabeled` makes adding the skip label re-run the check. Create the `skip-changelog` label
+in each repo, and make the check required in branch protection if it should block merging.
+
+| Input | Default | Description |
+|---|---|---|
+| `changelog_path` | `CHANGELOG.md` | Changelog location |
+| `skip_label` | `skip-changelog` | Label that skips the check |
+| `skip_actors` | `dependabot[bot]` | Space-separated PR authors to skip |
+
+## citation_check
+
+Validates `CITATION.cff` against the Citation File Format schema with
+[cffconvert](https://github.com/citation-file-format/cffconvert), and warns (without failing) if its `version`
+differs from the latest `v*` tag on the base branch, or from the PR's version on a `release/v*` PR. Does nothing if
+the file doesn't exist, unless `required: true`.
+
+```yaml
+name: Citation
+on:
+  pull_request:
+    paths: [CITATION.cff]
+  push:
+    branches: [main]
+    paths: [CITATION.cff]
+
+jobs:
+  citation:
+    uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v1
+```
+
+| Input | Default | Description |
+|---|---|---|
+| `citation_path` | `CITATION.cff` | Citation file location |
+| `required` | `false` | Fail if the file is missing |
+| `cffconvert_version` | `2.0.0` | cffconvert version used to validate |
+
 ## Versioning
 
 Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to

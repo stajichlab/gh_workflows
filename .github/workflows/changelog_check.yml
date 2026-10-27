@@ -1,0 +1,108 @@
+name: Check changelog
+
+# Reusable workflow: fail a pull request that does not add an entry to the changelog's [Unreleased] section, so
+# release_prepare never finds it empty. Skipped for PRs with the skip label, PRs from listed actors (Dependabot by
+# default) and release/v* PRs. Call it from a workflow triggered by
+# `pull_request: types: [opened, synchronize, reopened, labeled, unlabeled]` so adding the label re-runs it.
+
+on:
+  workflow_call:
+    inputs:
+      changelog_path:
+        description: "Path to the changelog"
+        required: false
+        type: string
+        default: CHANGELOG.md
+      skip_label:
+        description: "Pull request label that skips the check"
+        required: false
+        type: string
+        default: skip-changelog
+      skip_actors:
+        description: "Space-separated PR authors whose PRs are skipped"
+        required: false
+        type: string
+        default: "dependabot[bot]"
+
+jobs:
+  check:
+    name: Check changelog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Decide whether to check
+        id: skip
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          SKIP_LABEL: ${{ inputs.skip_label }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          SKIP_ACTORS: ${{ inputs.skip_actors }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          reason=""
+          if [ -z "$HEAD_REF" ]; then
+            reason="not a pull request"
+          elif [[ "$HEAD_REF" == release/v* ]]; then
+            reason="release pull request"
+          elif [ -n "$SKIP_LABEL" ] && jq -e --arg l "$SKIP_LABEL" 'index($l) != null' <<<"$LABELS" >/dev/null; then
+            reason="labelled '${SKIP_LABEL}'"
+          elif [[ " $SKIP_ACTORS " == *" $AUTHOR "* ]]; then
+            reason="opened by ${AUTHOR}"
+          fi
+          if [ -n "$reason" ]; then
+            echo "Skipping changelog check: ${reason}"
+            echo "Changelog check skipped: ${reason}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "skip=$([ -n "$reason" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        if: steps.skip.outputs.skip == 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Check changelog was edited
+        if: steps.skip.outputs.skip == 'false'
+        env:
+          CHANGELOG: ${{ inputs.changelog_path }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SKIP_LABEL: ${{ inputs.skip_label }}
+        run: |
+          hint="Add an entry under [Unreleased] in ${CHANGELOG}${SKIP_LABEL:+, or add the '${SKIP_LABEL}' label if this change needs none}."
+          if [ ! -f "$CHANGELOG" ]; then
+            echo "::error::${CHANGELOG} not found. ${hint}"
+            exit 1
+          fi
+          # Non-blank lines added by this PR, compared with where it branched from the base
+          added=$(git diff --unified=0 "${BASE_SHA}...${HEAD_SHA}" -- "$CHANGELOG" | grep -E '^\+[^+]' | grep -vE '^\+\s*$' || true)
+          if [ -z "$added" ]; then
+            echo "::error file=${CHANGELOG}::No changelog entry added. ${hint}"
+            exit 1
+          fi
+          echo "Added to ${CHANGELOG}:"
+          echo "$added"
+
+      - name: Check [Unreleased] section
+        if: steps.skip.outputs.skip == 'false'
+        id: unreleased
+        uses: release-flow/keep-a-changelog-action@74931dec7ecdbfc8e38ac9ae7e8dd84c08db2f32 # v3.0.0
+        with:
+          command: query
+          version: unreleased
+          changelog: ${{ inputs.changelog_path }}
+
+      - name: Require [Unreleased] entries
+        if: steps.skip.outputs.skip == 'false'
+        env:
+          CHANGELOG: ${{ inputs.changelog_path }}
+          NOTES: ${{ steps.unreleased.outputs.release-notes }}
+        run: |
+          if [ -z "$(tr -d '[:space:]' <<<"$NOTES")" ]; then
+            echo "::error file=${CHANGELOG}::The [Unreleased] section is empty; the entry must go under [Unreleased]."
+            exit 1
+          fi
