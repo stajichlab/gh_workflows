@@ -1,0 +1,231 @@
+name: Build container image
+
+# Reusable workflow: build a container image from a ref, smoke-test it locally, then (optionally) push it to GHCR
+# with version, major.minor, latest and extra tags. Prereleases get only their exact version tag, never major.minor
+# or latest.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to build (e.g. v1.2.3); defaults to the commit that triggered the caller"
+        required: false
+        type: string
+        default: ""
+      version:
+        description: "Version to tag the image with; defaults to ref if ref looks like v<semver>"
+        required: false
+        type: string
+        default: ""
+      image:
+        description: "Image name without tag; defaults to ghcr.io/<owner>/<repo> (lowercased)"
+        required: false
+        type: string
+        default: ""
+      context:
+        description: "Docker build context"
+        required: false
+        type: string
+        default: "."
+      dockerfile:
+        description: "Path to the Dockerfile"
+        required: false
+        type: string
+        default: Dockerfile
+      build_args:
+        description: "Newline-separated build arguments (NAME=value)"
+        required: false
+        type: string
+        default: ""
+      platforms:
+        description: "Comma-separated platforms to push (e.g. linux/amd64,linux/arm64)"
+        required: false
+        type: string
+        default: linux/amd64
+      smoke_test_args:
+        description: "Arguments for `docker run --rm <image>` before pushing (e.g. --help); skipped if empty"
+        required: false
+        type: string
+        default: ""
+      latest:
+        description: "Also tag as latest (ignored for prereleases)"
+        required: false
+        type: boolean
+        default: false
+      extra_tags:
+        description: "Newline-separated extra tags (e.g. testing)"
+        required: false
+        type: string
+        default: ""
+      push:
+        description: "Push the image; if false, only build and smoke-test"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      registry_username:
+        description: "Registry username; defaults to github.actor (enough for GHCR)"
+        required: false
+      registry_password:
+        description: "Registry password or token; defaults to GITHUB_TOKEN (enough for GHCR)"
+        required: false
+    outputs:
+      image:
+        description: "Image name without tag"
+        value: ${{ jobs.build.outputs.image }}
+      tags:
+        description: "Newline-separated full image references that were built"
+        value: ${{ jobs.build.outputs.tags }}
+      digest:
+        description: "Digest of the pushed image (empty if not pushed)"
+        value: ${{ jobs.build.outputs.digest }}
+
+jobs:
+  build:
+    name: Build container image
+    runs-on: ubuntu-latest
+    concurrency:
+      group: container-build-${{ inputs.ref || github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      tags: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.push.outputs.digest }}
+
+    steps:
+      # Computed here rather than by metadata-action's ref detection: in a reusable workflow github.ref and
+      # github.event_name belong to the caller (e.g. the merged PR), not to the ref being built.
+      - name: Resolve ref, version and image
+        id: resolve
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_IMAGE: ${{ inputs.image }}
+          INPUT_LATEST: ${{ inputs.latest }}
+          EXTRA_TAGS: ${{ inputs.extra_tags }}
+          REPO: ${{ github.repository }}
+        run: |
+          ref="${INPUT_REF:-$GITHUB_SHA}"
+          version="${INPUT_VERSION#v}"
+          if [ -z "$version" ] && [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            version="${ref#v}"
+          fi
+
+          prerelease=false
+          major_minor=""
+          if [ -n "$version" ]; then
+            if [[ "$version" == *-* ]]; then
+              prerelease=true
+            else
+              major_minor=$(cut -d. -f1,2 <<<"$version")
+            fi
+          fi
+          latest=false
+          if [ "$INPUT_LATEST" = true ] && [ "$prerelease" = false ]; then latest=true; fi
+
+          image="${INPUT_IMAGE:-ghcr.io/${REPO,,}}"
+          echo "Building ${image} from ${ref} (version: ${version:-none}, latest: ${latest})"
+          {
+            echo "ref=$ref"
+            echo "version=$version"
+            echo "major_minor=$major_minor"
+            echo "latest=$latest"
+            echo "image=$image"
+            echo "registry=${image%%/*}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Extra tags as metadata-action raw tag rules, one per non-empty line
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            echo "extra_tags<<$delim"
+            sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' -e 's/^/type=raw,value=/' <<<"$EXTRA_TAGS"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.ref }}
+          # Full history and tags, so version tools such as versioningit or setuptools-scm work inside the build
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up QEMU
+        if: contains(inputs.platforms, ',') || !contains(inputs.platforms, 'amd64')
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to registry
+        if: inputs.push
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ steps.resolve.outputs.registry }}
+          username: ${{ secrets.registry_username || github.actor }}
+          password: ${{ secrets.registry_password || github.token }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.resolve.outputs.image }}
+          tags: |
+            type=raw,value=${{ steps.resolve.outputs.version }},enable=${{ steps.resolve.outputs.version != '' }}
+            type=raw,value=${{ steps.resolve.outputs.major_minor }},enable=${{ steps.resolve.outputs.major_minor != '' }}
+            type=raw,value=latest,enable=${{ steps.resolve.outputs.latest == 'true' }}
+            type=sha,format=short,prefix=sha-
+            ${{ steps.resolve.outputs.extra_tags }}
+          flavor: latest=false
+
+      # Build once for the runner's platform and load it locally, so the smoke test runs against the image before
+      # anything is pushed
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          build-args: ${{ inputs.build_args }}
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test image
+        if: inputs.smoke_test_args != ''
+        env:
+          IMAGE: ${{ fromJson(steps.meta.outputs.json).tags[0] }}
+          ARGS: ${{ inputs.smoke_test_args }}
+        run: |
+          # ARGS is word-split on purpose so several arguments can be passed
+          # shellcheck disable=SC2086
+          docker run --rm "$IMAGE" $ARGS
+
+      - name: Push image
+        id: push
+        if: inputs.push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          build-args: ${{ inputs.build_args }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          PUSHED: ${{ inputs.push }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            if [ "$PUSHED" = true ]; then echo "Pushed (${DIGEST}):"; else echo "Built, not pushed:"; fi
+            sed 's/^/- `/; s/$/`/' <<<"$TAGS"
+          } >> "$GITHUB_STEP_SUMMARY"

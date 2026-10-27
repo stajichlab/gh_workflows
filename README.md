@@ -169,6 +169,62 @@ trigger `release: published` workflows.
 
 Outputs: `result` (`up-to-date`, `merged` or `pull-request`), `pr_url`.
 
+## container_build
+
+Builds a container image from a branch, tag or commit, runs an optional smoke test against the locally loaded
+image, then pushes it (to GHCR by default). Tags:
+
+| Tag | When |
+|---|---|
+| `1.2.3` | a version is given, or `ref` looks like `v1.2.3` |
+| `1.2` | same, but not for prereleases |
+| `latest` | `latest: true`, but not for prereleases |
+| `sha-<short sha>` | always |
+| extra tags | from `extra_tags` |
+
+Typical use is after `release_publish`, building from the new tag:
+
+```yaml
+  container:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      ref: ${{ needs.publish.outputs.tag }}
+      latest: true
+      smoke_test_args: --help
+```
+
+For a manual test image, call it from a `workflow_dispatch` workflow with `ref: ${{ github.ref_name }}`,
+`extra_tags: testing` and `push: false` (or `true`).
+
+| Input | Default | Description |
+|---|---|---|
+| `ref` | triggering commit | Branch, tag or commit to build |
+| `version` | from `ref` if it is `v<semver>` | Version tag |
+| `image` | `ghcr.io/<owner>/<repo>` (lowercased) | Image name without tag |
+| `context` | `.` | Build context |
+| `dockerfile` | `Dockerfile` | Dockerfile path |
+| `build_args` | `""` | Newline-separated `NAME=value` |
+| `platforms` | `linux/amd64` | Platforms to push; QEMU is set up for anything else |
+| `smoke_test_args` | `""` | Arguments for `docker run --rm <image>`; skipped if empty |
+| `latest` | `false` | Tag as `latest` (ignored for prereleases) |
+| `extra_tags` | `""` | Newline-separated extra tags |
+| `push` | `true` | Push; if `false`, only build and smoke-test |
+
+| Secret | Description |
+|---|---|
+| `registry_username`, `registry_password` | For registries other than GHCR (e.g. Docker Hub). GHCR uses `GITHUB_TOKEN`. |
+
+Outputs: `image`, `tags`, `digest`.
+
+The checkout includes full history and tags, so version tools such as versioningit or setuptools-scm work during
+the build (the `.git` directory must not be excluded by `.dockerignore` for that). The first push of a new GHCR
+image creates it as private; change its visibility in the package settings.
+
 ## Versioning
 
 Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to
@@ -187,4 +243,6 @@ each new compatible release. Breaking changes get `v2`.
 - `test_release_sync_dev.yml` runs `release_sync_dev` end to end on three throwaway branch pairs (already up to
   date, clean merge, conflict), checks the results and the conflict PR, then deletes the PR and branches. The
   "push rejected" fallback needs branch protection and is not covered. Same triggers and repo setting as above.
+- `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
+  version, runs the smoke test and checks the tags. It never pushes.
 - Dependabot updates the pinned action SHAs monthly.
