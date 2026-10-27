@@ -1,4 +1,4 @@
-name: Sync dev after release
+name: Sync dev
 
 # Reusable workflow: merge the release branch (main) into the development branch (dev) and push. If the merge
 # conflicts or the push is rejected (e.g. branch protection), push the source commit to a sync/* branch and open a

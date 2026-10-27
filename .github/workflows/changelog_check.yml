@@ -1,4 +1,4 @@
-name: Check changelog
+name: Changelog check
 
 # Reusable workflow: fail a pull request that does not add an entry to the changelog's [Unreleased] section, so
 # release_prepare never finds it empty. Skipped for PRs with the skip label, PRs from listed actors (Dependabot by

@@ -1,4 +1,4 @@
-name: Publish release
+name: Release publish
 
 # Reusable workflow: after a release/v<version> pull request (opened by release_prepare) is merged, tag the merge
 # commit on the base branch as v<version> and create the GitHub release, with notes from the changelog (or

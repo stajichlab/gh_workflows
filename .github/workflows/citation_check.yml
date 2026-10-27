@@ -1,4 +1,4 @@
-name: Check CITATION.cff
+name: Citation check
 
 # Reusable workflow: validate CITATION.cff against the Citation File Format schema with cffconvert, and warn if its
 # version differs from the latest v* tag on the base branch. Call it from a workflow triggered by pull_request (and

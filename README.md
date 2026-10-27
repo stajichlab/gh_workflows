@@ -6,7 +6,7 @@ Reusable GitHub Actions workflows for stajichlab repositories.
 
 Computes the next version from the latest `v*` tag, checks it against `CHANGELOG.md`
 ([Keep a Changelog](https://keepachangelog.com) format) if the repo has one, bumps the changelog, runs the
-calling repo's own version bump command, updates `CITATION.cff` if present, commits to a `release/v<version>`
+calling repo's own version bump command, updates and validates `CITATION.cff` if present (warning if it is missing), commits to a `release/v<version>`
 branch and opens a pull request for review. Tagging, building and publishing are left to the caller (for
 example, a workflow triggered when the release PR is merged).
 
@@ -45,6 +45,7 @@ jobs:
 | `additional_bump_command` | `""` | Shell command that updates version strings; runs with `$VERSION` set |
 | `changelog_path` | `CHANGELOG.md` | Changelog location; skipped if missing |
 | `base_branch` | `main` | Branch to release from and PR target |
+| `cffconvert_version` | `2.0.0` | cffconvert version used to validate `CITATION.cff` after the bump |
 | `draft` | `false` | Open the PR as a draft |
 | `reviewers` | `""` | Comma-separated users or `org/team` slugs to request review from |
 
@@ -371,6 +372,7 @@ environment, or the pixi environment), so they see its packages and tools.
 
 | Input | Default | Description |
 |---|---|---|
+| `ref` | triggering commit | Branch, tag or commit to test |
 | `installer` | `pip` | `pip`, `conda` or `pixi` |
 | `python_versions` | `["3.10", …, "3.14"]` | JSON list (pip, conda). For conda, `[""]` uses the file's Python |
 | `pixi_environments` | `["default"]` | JSON list of pixi environments (pixi) |
@@ -410,6 +412,10 @@ each new compatible release. Breaking changes get `v2`.
   its tag (`required: true`) and with no file, both of which must pass, and checks that the pinned cffconvert
   rejects an invalid file. The invalid case calls cffconvert directly, since a failing reusable-workflow call would
   fail the whole test run.
+- `test_python_test.yml` builds a tiny package on a throwaway orphan branch (with a conda environment file and a
+  freshly generated `pixi.lock`) and runs `python_test` against it with pip (two Python versions, ruff, and a fake
+  tool from an artifact on `PATH`), conda and pixi. The test commands check that they run inside the right
+  environment and Python version.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags. It never pushes.
 - Dependabot updates the pinned action SHAs monthly.

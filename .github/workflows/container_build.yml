@@ -1,4 +1,4 @@
-name: Build container image
+name: Container build
 
 # Reusable workflow: build a container image from a ref, smoke-test it locally, then (optionally) push it to GHCR
 # with version, major.minor, latest and extra tags. Prereleases get only their exact version tag, never major.minor

@@ -1,0 +1,164 @@
+name: Test python_test
+
+# End-to-end test: build a tiny Python package on a throwaway orphan branch (with a conda environment file and a
+# freshly generated pixi.lock), upload a fake external tool as an artifact, then run python_test against it with
+# pip (plus ruff and the tool on PATH), conda and pixi. Each call fails if its tests fail; the branch is deleted
+# afterwards.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/python_test.yml
+      - .github/workflows/test_python_test.yml
+
+concurrency:
+  group: test-python-test
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  BASE: test/python-${{ github.run_id }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.fixture.outputs.ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Write fixture package
+        run: |
+          git switch --orphan "$BASE"
+          mkdir -p src/fixturepkg tests
+
+          cat > pyproject.toml <<'TOML'
+          [build-system]
+          requires = ["hatchling"]
+          build-backend = "hatchling.build"
+
+          [project]
+          name = "fixturepkg"
+          version = "0.1.0"
+          requires-python = ">=3.10"
+
+          [project.optional-dependencies]
+          dev = ["pytest"]
+          TOML
+
+          cat > src/fixturepkg/__init__.py <<'PY'
+          def answer() -> int:
+              return 42
+          PY
+
+          cat > tests/test_fixturepkg.py <<'PY'
+          import fixturepkg
+
+
+          def test_answer() -> None:
+              assert fixturepkg.answer() == 42
+          PY
+
+          cat > environment.yml <<'YML'
+          name: fixture
+          channels:
+            - conda-forge
+          dependencies:
+            - python
+            - pip
+            - pytest
+            - pip:
+                - -e .
+          YML
+
+          cat > pixi.toml <<'TOML'
+          [workspace]
+          name = "fixture"
+          channels = ["conda-forge"]
+          platforms = ["linux-64"]
+
+          [dependencies]
+          python = "3.12.*"
+          pytest = "*"
+
+          [pypi-dependencies]
+          fixturepkg = { path = ".", editable = true }
+          TOML
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          run-install: false
+
+      - name: Generate pixi.lock and push fixture branch
+        id: fixture
+        run: |
+          pixi lock
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Test fixture"
+          git push origin "$BASE"
+          echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Create fake external tool
+        run: |
+          mkdir tool
+          printf '#!/bin/sh\necho fixture-tool ok\n' > tool/fixture-tool
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tool-fixture
+          path: tool/fixture-tool
+
+  pip:
+    needs: setup
+    uses: ./.github/workflows/python_test.yml
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      python_versions: '["3.10", "3.13"]'
+      ruff: true
+      tools_artifact_pattern: tool-*
+      # Fails unless the tool artifact is on PATH and executable
+      setup_command: fixture-tool
+      test_command: python -c "import fixturepkg, sys; print(sys.version)" && pytest -v
+
+  conda:
+    needs: setup
+    uses: ./.github/workflows/python_test.yml
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      installer: conda
+      python_versions: '["3.12"]'
+      # Fails unless the tests run inside the conda environment with the requested Python
+      test_command: |
+        python -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+        python -c 'import fixturepkg, sys; assert sys.prefix.endswith("/envs/test"), sys.prefix'
+        pytest -v
+
+  pixi:
+    needs: setup
+    uses: ./.github/workflows/python_test.yml
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      installer: pixi
+      # Fails unless the tests run inside the pixi environment
+      test_command: |
+        python -c 'import fixturepkg, sys; assert "/.pixi/envs/default" in sys.prefix, sys.prefix'
+        pytest -v
+
+  cleanup:
+    needs: [setup, pip, conda, pixi]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete fixture branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: gh api -X DELETE "repos/${REPO}/git/refs/heads/${BASE}" || true

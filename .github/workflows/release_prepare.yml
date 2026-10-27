@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: ""
+      cffconvert_version:
+        description: "cffconvert version used to validate CITATION.cff after the bump (keep in step with citation_check)"
+        required: false
+        type: string
+        default: "2.0.0"
       draft:
         description: "Open the release pull request as a draft"
         required: false
@@ -208,6 +213,17 @@ jobs:
             fi
           else
             echo "::warning::CITATION.cff not found; skipping citation bump"
+          fi
+
+      - name: Validate citation
+        if: hashFiles('CITATION.cff') != ''
+        env:
+          CFFCONVERT_VERSION: ${{ inputs.cffconvert_version }}
+        run: |
+          # Checks the file exactly as it will be committed, so an invalid citation never reaches the release PR
+          if ! pipx run "cffconvert==${CFFCONVERT_VERSION}" --validate --infile CITATION.cff; then
+            echo "::error file=CITATION.cff::CITATION.cff is not valid after the version bump; fix it and run again"
+            exit 1
           fi
 
       - name: Commit and push release branch

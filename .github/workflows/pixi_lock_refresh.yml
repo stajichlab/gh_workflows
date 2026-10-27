@@ -1,4 +1,4 @@
-name: Refresh pixi.lock
+name: Pixi lock refresh
 
 # Reusable workflow: Dependabot bumps dependencies in pyproject.toml / pixi.toml but does not update pixi.lock.
 # Regenerate the lock file and push it to the pull request branch, so the PR stays installable with
