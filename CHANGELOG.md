@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-27
+
 ### Added
 
 - `release_prepare`: compute the next version from the latest `v*` tag on the base branch, check it against the
@@ -31,3 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflows for this repo itself (`release.yml`, `publish.yml`, which also moves the `v<major>` tag callers
   pin to) and a changelog check on its pull requests (`changelog.yml`).
 - Dependabot updates for the pinned GitHub Actions.
+
+[Unreleased]: https://github.com/stajichlab/gh_workflows/compare/v1.0.0...HEAD
+
+[1.0.0]: https://github.com/stajichlab/gh_workflows/releases/tag/v1.0.0
