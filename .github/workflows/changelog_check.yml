@@ -73,7 +73,11 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SKIP_LABEL: ${{ inputs.skip_label }}
         run: |
-          hint="Add an entry under [Unreleased] in ${CHANGELOG}${SKIP_LABEL:+, or add the '${SKIP_LABEL}' label if this change needs none}."
+          hint="Add an entry under [Unreleased] in ${CHANGELOG}"
+          if [ -n "$SKIP_LABEL" ]; then
+            hint+=", or add the \"${SKIP_LABEL}\" label if this change needs none"
+          fi
+          hint+="."
           if [ ! -f "$CHANGELOG" ]; then
             echo "::error::${CHANGELOG} not found. ${hint}"
             exit 1

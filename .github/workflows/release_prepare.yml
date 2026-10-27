@@ -110,10 +110,10 @@ jobs:
 
           # Highest semver among v* tags reachable from the base branch; git's own version sort orders prereleases
           # after their release
-          versions=$(git tag --list 'v*' --merged HEAD | sed 's/^v//')
+          mapfile -t versions < <(git tag --list 'v*' --merged HEAD | sed 's/^v//')
           previous=""
-          if [ -n "$versions" ]; then
-            previous=$(npx --yes semver@7.6.3 $versions | tail -n 1 || true)
+          if [ "${#versions[@]}" -gt 0 ]; then
+            previous=$(npx --yes semver@7.6.3 "${versions[@]}" | tail -n 1 || true)
           fi
           next=$(npx --yes semver@7.6.3 -i "$BUMP_TYPE" ${PREID:+--preid "$PREID"} "${previous:-0.0.0}")
           echo "Previous: ${previous:-(none)}, next: $next"

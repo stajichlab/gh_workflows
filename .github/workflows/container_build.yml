@@ -227,5 +227,7 @@ jobs:
         run: |
           {
             if [ "$PUSHED" = true ]; then echo "Pushed (${DIGEST}):"; else echo "Built, not pushed:"; fi
-            sed 's/^/- `/; s/$/`/' <<<"$TAGS"
+            while IFS= read -r tag; do
+              echo "- \`${tag}\`"
+            done <<<"$TAGS"
           } >> "$GITHUB_STEP_SUMMARY"

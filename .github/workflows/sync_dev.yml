@@ -113,6 +113,8 @@ jobs:
             else
               reason="Pushing to \`${TARGET}\` directly was rejected (likely branch protection)."
             fi
+            # Backticks are Markdown code formatting in the PR body, not command substitution
+            # shellcheck disable=SC2016
             body=$(printf 'Brings `%s` up to date with `%s` (%s) after the release.\n\n%s\n' \
               "$TARGET" "$SOURCE" "$LABEL" "$reason")
             args=()
