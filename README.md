@@ -65,6 +65,42 @@ If a step fails after the release branch was pushed, the branch is deleted so th
 Only one `release_prepare` run per repository proceeds at a time. A second run waits; if a third is started while
 one is waiting, GitHub cancels the waiting one.
 
+## release_sync_dev
+
+Brings the development branch (`dev`) up to date with the release branch (`main`) after a release. It merges
+`main` into `dev` and pushes; if `dev` already contains `main` it does nothing. If the merge conflicts or the push
+is rejected (for example by branch protection on `dev`), it pushes `main`'s commit to a
+`sync/main-to-dev-<sha>` branch and opens a pull request into `dev` instead, so conflicts are resolved on that
+branch and never on `main`. Re-running while that PR is open reuses it.
+
+```yaml
+on:
+  release:
+    types: [published]
+
+jobs:
+  sync-dev:
+    uses: stajichlab/gh_workflows/.github/workflows/release_sync_dev.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+Or chain it after the publish job with `needs:`. A release created with the default `GITHUB_TOKEN` does not
+trigger `release: published` workflows.
+
+| Input | Default | Description |
+|---|---|---|
+| `source_branch` | `main` | Branch that received the release |
+| `target_branch` | `dev` | Branch to bring up to date |
+| `reviewers` | `""` | Reviewers to request if a PR is opened |
+
+| Secret | Description |
+|---|---|
+| `token` | Optional GitHub App token or PAT. Needed if pushes to `dev` should trigger CI, or if `dev` is protected and the token is allowed to bypass that protection. |
+
+Outputs: `result` (`up-to-date`, `merged` or `pull-request`), `pr_url`.
+
 ## Versioning
 
 Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to
@@ -77,4 +113,7 @@ each new compatible release. Breaking changes get `v2`.
   tag, checks the release branch and the draft PR, then deletes the PR, branches and tag. It runs on pushes to
   `main` that touch either workflow, or manually. It needs **Allow GitHub Actions to create and approve pull
   requests** enabled in this repo.
+- `test_release_sync_dev.yml` runs `release_sync_dev` end to end on three throwaway branch pairs (already up to
+  date, clean merge, conflict), checks the results and the conflict PR, then deletes the PR and branches. The
+  "push rejected" fallback needs branch protection and is not covered. Same triggers and repo setting as above.
 - Dependabot updates the pinned action SHAs monthly.

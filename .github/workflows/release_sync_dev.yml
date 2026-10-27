@@ -1,0 +1,134 @@
+name: Sync dev after release
+
+# Reusable workflow: merge the release branch (main) into the development branch (dev) and push. If the merge
+# conflicts or the push is rejected (e.g. branch protection), push the source commit to a sync/* branch and open a
+# pull request into the development branch instead, so conflicts are resolved there rather than on main.
+
+on:
+  workflow_call:
+    inputs:
+      source_branch:
+        description: "Branch that received the release"
+        required: false
+        type: string
+        default: main
+      target_branch:
+        description: "Branch to bring up to date"
+        required: false
+        type: string
+        default: dev
+      reviewers:
+        description: "Comma-separated users or org/team slugs to request review from if a pull request is opened"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      token:
+        description: "Token used to push and open the pull request (GitHub App or PAT) so pushes trigger CI; defaults to GITHUB_TOKEN"
+        required: false
+    outputs:
+      result:
+        description: "up-to-date, merged or pull-request"
+        value: ${{ jobs.sync.outputs.result }}
+      pr_url:
+        description: "URL of the sync pull request, if one was opened"
+        value: ${{ jobs.sync.outputs.pr_url }}
+
+jobs:
+  sync:
+    name: Sync ${{ inputs.target_branch }} with ${{ inputs.source_branch }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-sync-dev-${{ inputs.target_branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+      pr_url: ${{ steps.pr.outputs.url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.target_branch }}
+          token: ${{ secrets.token || github.token }}
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Merge and push
+        id: merge
+        env:
+          SOURCE: ${{ inputs.source_branch }}
+          TARGET: ${{ inputs.target_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$SOURCE"
+
+          if git merge-base --is-ancestor "origin/${SOURCE}" HEAD; then
+            echo "${TARGET} already contains ${SOURCE}"
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Name the merge after the release tag on the source commit, if there is one
+          label=$(git describe --tags --exact-match --match 'v*' "origin/${SOURCE}" 2>/dev/null || echo "$SOURCE")
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+          if ! git merge --no-edit -m "Merge ${label} into ${TARGET}" "origin/${SOURCE}"; then
+            git merge --abort
+            echo "::warning::Merging ${SOURCE} into ${TARGET} conflicts; opening a pull request instead"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git push origin "HEAD:${TARGET}"; then
+            echo "::warning::Push to ${TARGET} was rejected; opening a pull request instead"
+            echo "status=rejected" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "status=merged" >> "$GITHUB_OUTPUT"
+
+      - name: Open pull request
+        id: pr
+        if: steps.merge.outputs.status == 'conflict' || steps.merge.outputs.status == 'rejected'
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+          SOURCE: ${{ inputs.source_branch }}
+          TARGET: ${{ inputs.target_branch }}
+          LABEL: ${{ steps.merge.outputs.label }}
+          STATUS: ${{ steps.merge.outputs.status }}
+          REVIEWERS: ${{ inputs.reviewers }}
+        run: |
+          sha=$(git rev-parse --short "origin/${SOURCE}")
+          branch="sync/${SOURCE}-to-${TARGET}-${sha}"
+
+          url=$(gh pr list --head "$branch" --base "$TARGET" --state open --json url --jq '.[0].url')
+          if [ -z "$url" ]; then
+            git push origin "origin/${SOURCE}:refs/heads/${branch}"
+            if [ "$STATUS" = conflict ]; then
+              reason="Merging \`${SOURCE}\` into \`${TARGET}\` has conflicts; resolve them on this branch before merging."
+            else
+              reason="Pushing to \`${TARGET}\` directly was rejected (likely branch protection)."
+            fi
+            body=$(printf 'Brings `%s` up to date with `%s` (%s) after the release.\n\n%s\n' \
+              "$TARGET" "$SOURCE" "$LABEL" "$reason")
+            args=()
+            if [ -n "$REVIEWERS" ]; then args+=(--reviewer "$REVIEWERS"); fi
+            url=$(gh pr create --base "$TARGET" --head "$branch" \
+              --title "Sync ${TARGET} with ${SOURCE} (${LABEL})" --body "$body" "${args[@]}")
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Sync PR: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report result
+        id: result
+        env:
+          STATUS: ${{ steps.merge.outputs.status }}
+        run: |
+          case "$STATUS" in
+            up-to-date|merged) echo "result=$STATUS" >> "$GITHUB_OUTPUT" ;;
+            *) echo "result=pull-request" >> "$GITHUB_OUTPUT" ;;
+          esac

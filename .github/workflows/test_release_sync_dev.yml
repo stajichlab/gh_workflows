@@ -1,0 +1,143 @@
+name: Test release_sync_dev
+
+# End-to-end test: build throwaway source/target branch pairs (orphan, so they share only the fixture history) for
+# three cases (already up to date, clean merge, conflict), run release_sync_dev on each, check the results, then
+# delete everything it created. The "push rejected" fallback needs branch protection and is not covered here.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release_sync_dev.yml
+      - .github/workflows/test_release_sync_dev.yml
+
+concurrency:
+  group: test-release-sync-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  PREFIX: test/sync-${{ github.run_id }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      prefix: ${{ steps.fixture.outputs.prefix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create fixture branches
+        id: fixture
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan fixture-base
+          echo base > shared.txt
+          git add shared.txt
+          git commit -m "Fixture base"
+          base=$(git rev-parse HEAD)
+
+          commit() { # branch file content
+            git switch -q -C "$1" "$base"
+            echo "$3" > "$2"
+            git add "$2"
+            git commit -q -m "$1: $2"
+          }
+
+          # up-to-date: target already contains source
+          git branch "${PREFIX}/uptodate-src" "$base"
+          commit "${PREFIX}/uptodate-dst" dev-only.txt dev
+
+          # merge: both sides changed different files
+          commit "${PREFIX}/merge-src" release.txt release
+          commit "${PREFIX}/merge-dst" dev-only.txt dev
+
+          # conflict: both sides changed the same file
+          commit "${PREFIX}/conflict-src" shared.txt release
+          commit "${PREFIX}/conflict-dst" shared.txt dev
+
+          git push origin \
+            "${PREFIX}/uptodate-src" "${PREFIX}/uptodate-dst" \
+            "${PREFIX}/merge-src" "${PREFIX}/merge-dst" \
+            "${PREFIX}/conflict-src" "${PREFIX}/conflict-dst"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+
+  sync-uptodate:
+    needs: setup
+    uses: ./.github/workflows/release_sync_dev.yml
+    with:
+      source_branch: ${{ needs.setup.outputs.prefix }}/uptodate-src
+      target_branch: ${{ needs.setup.outputs.prefix }}/uptodate-dst
+
+  sync-merge:
+    needs: setup
+    uses: ./.github/workflows/release_sync_dev.yml
+    with:
+      source_branch: ${{ needs.setup.outputs.prefix }}/merge-src
+      target_branch: ${{ needs.setup.outputs.prefix }}/merge-dst
+
+  sync-conflict:
+    needs: setup
+    uses: ./.github/workflows/release_sync_dev.yml
+    with:
+      source_branch: ${{ needs.setup.outputs.prefix }}/conflict-src
+      target_branch: ${{ needs.setup.outputs.prefix }}/conflict-dst
+
+  verify:
+    needs: [setup, sync-uptodate, sync-merge, sync-conflict]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPTODATE: ${{ needs.sync-uptodate.outputs.result }}
+          MERGE: ${{ needs.sync-merge.outputs.result }}
+          CONFLICT: ${{ needs.sync-conflict.outputs.result }}
+          CONFLICT_PR: ${{ needs.sync-conflict.outputs.pr_url }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          [ "$UPTODATE" = up-to-date ] || fail "up-to-date case returned '$UPTODATE'"
+          [ "$MERGE" = merged ] || fail "merge case returned '$MERGE'"
+          [ "$CONFLICT" = pull-request ] || fail "conflict case returned '$CONFLICT'"
+
+          git fetch origin "+refs/heads/${PREFIX}/*:refs/remotes/origin/${PREFIX}/*"
+          dst="origin/${PREFIX}/merge-dst"
+          git merge-base --is-ancestor "origin/${PREFIX}/merge-src" "$dst" || fail "merge-dst does not contain merge-src"
+          [ "$(git log -1 --format=%s "$dst")" = "Merge ${PREFIX}/merge-src into ${PREFIX}/merge-dst" ] \
+            || fail "unexpected merge commit message: $(git log -1 --format=%s "$dst")"
+          git show "$dst:dev-only.txt" >/dev/null || fail "merge-dst lost its own commit"
+
+          [ -n "$CONFLICT_PR" ] || fail "conflict case did not return a PR URL"
+          [ "$(gh pr view "$CONFLICT_PR" --json baseRefName --jq .baseRefName)" = "${PREFIX}/conflict-dst" ] \
+            || fail "conflict PR targets the wrong branch"
+          gh pr view "$CONFLICT_PR" --json body --jq .body | grep -q 'has conflicts' \
+            || fail "conflict PR body does not mention conflicts"
+
+  cleanup:
+    needs: [setup, sync-uptodate, sync-merge, sync-conflict, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete test PR and branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_URL: ${{ needs.sync-conflict.outputs.pr_url }}
+        run: |
+          if [ -n "$PR_URL" ]; then gh pr close "$PR_URL" --repo "$REPO" || true; fi
+          # Fixture branches and the sync/* branch created for the conflict case
+          for prefix in "$PREFIX" "sync/${PREFIX}"; do
+            gh api "repos/${REPO}/git/matching-refs/heads/${prefix}" --jq '.[].ref' |
+              while read -r ref; do
+                gh api -X DELETE "repos/${REPO}/git/${ref#refs/}" || true
+              done
+          done
