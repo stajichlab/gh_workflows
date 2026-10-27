@@ -1,0 +1,121 @@
+name: Test release_publish
+
+# End-to-end test: build a throwaway orphan base branch with a changelog entry for a test prerelease version and a
+# release/v<version> branch, run release_publish with an attached artifact, check the tag, release and branch
+# deletion, then delete everything it created. A prerelease is used so the test never becomes the repo's "latest"
+# release. The pull-request-merge path is not covered (it needs a real merged PR event).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release_publish.yml
+      - .github/workflows/test_release_publish.yml
+
+concurrency:
+  group: test-release-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  BASE: test/publish-${{ github.run_id }}
+  VERSION: 0.0.0-test.${{ github.run_id }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.fixture.outputs.version }}
+      target: ${{ steps.fixture.outputs.target }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create fixture branches
+        id: fixture
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$BASE"
+          cat > CHANGELOG.md <<MD
+          # Changelog
+
+          ## [Unreleased]
+
+          ## [${VERSION}] - 2026-01-01
+
+          ### Added
+
+          - Publish test entry
+          MD
+          git add CHANGELOG.md
+          git commit -m "Test fixture"
+          git push origin "$BASE" "HEAD:refs/heads/release/v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "target=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release file
+        run: |
+          mkdir dist
+          echo "test asset" > dist/asset.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: dist/
+
+  publish:
+    needs: setup
+    uses: ./.github/workflows/release_publish.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
+      target: ${{ needs.setup.outputs.target }}
+      artifact: release-files
+
+  verify:
+    needs: [setup, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tag, release and branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET: ${{ needs.setup.outputs.target }}
+          PUBLISHED: ${{ needs.publish.outputs.published }}
+          TAG: ${{ needs.publish.outputs.tag }}
+          PRERELEASE: ${{ needs.publish.outputs.prerelease }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          [ "$PUBLISHED" = true ] || fail "published is '$PUBLISHED'"
+          [ "$TAG" = "v${VERSION}" ] || fail "tag is '$TAG', expected v${VERSION}"
+          [ "$PRERELEASE" = true ] || fail "prerelease is '$PRERELEASE'"
+
+          tag_sha=$(gh api "repos/${REPO}/commits/${TAG}" --jq .sha)
+          [ "$tag_sha" = "$TARGET" ] || fail "tag points to $tag_sha, expected $TARGET"
+
+          release=$(gh release view "$TAG" --repo "$REPO" --json isPrerelease,body,assets)
+          [ "$(jq -r .isPrerelease <<<"$release")" = true ] || fail "release is not marked prerelease"
+          jq -r .body <<<"$release" | grep -qF 'Publish test entry' || fail "release notes missing changelog entry"
+          jq -r '.assets[].name' <<<"$release" | grep -qx 'asset.txt' || fail "asset.txt not attached"
+
+          if gh api "repos/${REPO}/git/ref/heads/release/v${VERSION}" >/dev/null 2>&1; then
+            fail "release/v${VERSION} branch was not deleted"
+          fi
+
+  cleanup:
+    needs: [setup, publish, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete test release, tag and branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release delete "v${VERSION}" --repo "$REPO" --yes --cleanup-tag || true
+          for ref in "tags/v${VERSION}" "heads/release/v${VERSION}" "heads/${BASE}"; do
+            gh api -X DELETE "repos/${REPO}/git/refs/${ref}" || true
+          done

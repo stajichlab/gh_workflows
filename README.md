@@ -65,6 +65,74 @@ If a step fails after the release branch was pushed, the branch is deleted so th
 Only one `release_prepare` run per repository proceeds at a time. A second run waits; if a third is started while
 one is waiting, GitHub cancels the waiting one.
 
+## release_publish
+
+The other half of `release_prepare`. When a `release/v<version>` pull request is merged, it tags the merge commit
+on the base branch as `v<version>` (where the next `release_prepare` run will find it), creates the GitHub release
+and deletes the release branch. Release notes come from the changelog entry for that version, or are generated
+by GitHub if there is no changelog. Versions with a prerelease suffix (`1.3.0-rc.0`) are marked as prereleases and
+never as the latest release. Files from an artifact built earlier in the calling run can be attached.
+
+It does nothing (and outputs `published: 'false'`) unless the triggering PR was merged from a `release/v*` branch,
+so it is safe to call on every closed PR.
+
+```yaml
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  build:   # repo-specific build and test; upload files with actions/upload-artifact
+    if: github.event.pull_request.merged && startsWith(github.head_ref, 'release/v')
+    ...
+
+  publish:
+    needs: build
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    permissions:
+      contents: write
+    with:
+      artifact: dist   # optional
+
+  container:   # repo-specific, runs after the tag exists
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    ...
+
+  sync-dev:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    uses: stajichlab/gh_workflows/.github/workflows/release_sync_dev.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+To publish by hand (for example after a failed run), call it from a `workflow_dispatch` workflow with `version`
+and optionally `target`. If the tag already exists on the same commit it is reused; on a different commit the
+workflow fails.
+
+| Input | Default | Description |
+|---|---|---|
+| `version` | from `release/v<version>` | Version to publish |
+| `target` | PR merge commit (`github.sha` if `version` is given) | Commit to tag |
+| `changelog_path` | `CHANGELOG.md` | Changelog location; GitHub-generated notes if missing |
+| `artifact` | `""` | Artifact from the calling run whose files are attached |
+| `environment` | `""` | Deployment environment for the publish job, e.g. to require approval |
+| `delete_branch` | `true` | Delete `release/v<version>` afterwards |
+
+| Secret | Description |
+|---|---|
+| `token` | Optional GitHub App token or PAT. Tags and releases created with `GITHUB_TOKEN` don't trigger other workflows (`push: tags`, `release: published`); pass this if anything relies on those triggers. |
+
+Outputs: `published`, `version`, `tag`, `prerelease`, `release_url`.
+
+**Requiring approval.** Pass `environment: release` (any name) and, in the calling repo, configure that environment
+under **Settings → Environments** with required reviewers. The publish job then waits for approval before
+tagging. The workflow only names the environment; the approval rule lives in each repo's settings, and GitHub
+creates an unconfigured environment (no approval) if it doesn't exist yet. A `token` secret stored in that
+environment is used in place of one passed by the caller, so it is only available to approved runs.
+
 ## release_sync_dev
 
 Brings the development branch (`dev`) up to date with the release branch (`main`) after a release. It merges
@@ -113,6 +181,9 @@ each new compatible release. Breaking changes get `v2`.
   tag, checks the release branch and the draft PR, then deletes the PR, branches and tag. It runs on pushes to
   `main` that touch either workflow, or manually. It needs **Allow GitHub Actions to create and approve pull
   requests** enabled in this repo.
+- `test_release_publish.yml` publishes a test prerelease (`v0.0.0-test.<run id>`, never marked latest) from a
+  throwaway orphan branch with an attached artifact, checks the tag, notes, asset and branch deletion, then deletes
+  the release, tag and branches. The merged-PR trigger path is not covered.
 - `test_release_sync_dev.yml` runs `release_sync_dev` end to end on three throwaway branch pairs (already up to
   date, clean merge, conflict), checks the results and the conflict PR, then deletes the PR and branches. The
   "push rejected" fallback needs branch protection and is not covered. Same triggers and repo setting as above.
