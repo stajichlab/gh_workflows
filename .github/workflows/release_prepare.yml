@@ -155,16 +155,21 @@ jobs:
             exit 1
           fi
 
+      # v3.0.0 only accepts a bump type, not an exact version. The previous step checked that the changelog's latest
+      # release equals the latest tag, so the action computes the same next version as the "Compute version from
+      # tags" step.
       - name: Bump changelog version
         if: hashFiles(inputs.changelog_path) != ''
         uses: release-flow/keep-a-changelog-action@74931dec7ecdbfc8e38ac9ae7e8dd84c08db2f32 # v3.0.0
         with:
           command: bump
-          version: ${{ steps.version.outputs.version }}
+          version: ${{ inputs.bump_type }}
+          preid: ${{ inputs.preid }}
           changelog: ${{ inputs.changelog_path }}
           keep-unreleased-section: true
           fail-on-empty-release-notes: true
 
+      # Looks up the tag-derived version, so this also fails if the changelog was bumped to anything else
       - name: Get changelog release notes
         id: changelog_notes
         if: hashFiles(inputs.changelog_path) != ''
