@@ -7,6 +7,11 @@ name: Check CITATION.cff
 on:
   workflow_call:
     inputs:
+      ref:
+        description: "Branch, tag or commit to check; defaults to the commit that triggered the caller"
+        required: false
+        type: string
+        default: ""
       citation_path:
         description: "Path to the citation file"
         required: false
@@ -34,6 +39,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
           filter: tree:0
 

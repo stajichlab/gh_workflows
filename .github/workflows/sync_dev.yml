@@ -39,7 +39,7 @@ jobs:
     name: Sync ${{ inputs.target_branch }} with ${{ inputs.source_branch }}
     runs-on: ubuntu-latest
     concurrency:
-      group: release-sync-dev-${{ inputs.target_branch }}
+      group: sync-dev-${{ inputs.target_branch }}
       cancel-in-progress: false
     permissions:
       contents: write

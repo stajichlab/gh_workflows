@@ -102,7 +102,7 @@ jobs:
   sync-dev:
     needs: publish
     if: needs.publish.outputs.published == 'true'
-    uses: stajichlab/gh_workflows/.github/workflows/release_sync_dev.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
     permissions:
       contents: write
       pull-requests: write
@@ -133,7 +133,7 @@ tagging. The workflow only names the environment; the approval rule lives in eac
 creates an unconfigured environment (no approval) if it doesn't exist yet. A `token` secret stored in that
 environment is used in place of one passed by the caller, so it is only available to approved runs.
 
-## release_sync_dev
+## sync_dev
 
 Brings the development branch (`dev`) up to date with the release branch (`main`) after a release. It merges
 `main` into `dev` and pushes; if `dev` already contains `main` it does nothing. If the merge conflicts or the push
@@ -148,7 +148,7 @@ on:
 
 jobs:
   sync-dev:
-    uses: stajichlab/gh_workflows/.github/workflows/release_sync_dev.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
     permissions:
       contents: write
       pull-requests: write
@@ -314,9 +314,79 @@ jobs:
 
 | Input | Default | Description |
 |---|---|---|
+| `ref` | triggering commit | Branch, tag or commit to check |
 | `citation_path` | `CITATION.cff` | Citation file location |
 | `required` | `false` | Fail if the file is missing |
 | `cffconvert_version` | `2.0.0` | cffconvert version used to validate |
+
+## python_test
+
+Runs a Python project's tests across a matrix, installing it with pip, conda (micromamba) or pixi. One workflow
+replaces separate per-installer CI workflows; call it once per installer. Optionally lints with ruff, puts
+externally built tools from artifacts on `PATH`, and uploads coverage to Codecov.
+
+```yaml
+name: CI
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-tools:   # repo-specific, uploads artifacts named tool-*
+    uses: ./.github/workflows/build-tools.yml
+
+  pip:
+    needs: build-tools
+    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    with:
+      ruff: true
+      tools_artifact_pattern: tool-*
+      test_command: pytest --cov --cov-report=xml
+      codecov: true
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+
+  conda:
+    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    with:
+      installer: conda
+      conda_environment_file: dev_environment.yml
+      python_versions: '[""]'   # use the Python pinned in the file
+
+  pixi:
+    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    with:
+      installer: pixi
+      pixi_environments: '["dev"]'
+      setup_command: command -v astral && command -v fasttree && command -v iqtree
+```
+
+`setup_command` and `test_command` run with bash inside the installed environment (the pip Python, the conda
+environment, or the pixi environment), so they see its packages and tools.
+
+| Input | Default | Description |
+|---|---|---|
+| `installer` | `pip` | `pip`, `conda` or `pixi` |
+| `python_versions` | `["3.10", …, "3.14"]` | JSON list (pip, conda). For conda, `[""]` uses the file's Python |
+| `pixi_environments` | `["default"]` | JSON list of pixi environments (pixi) |
+| `runs_on` | `["ubuntu-latest"]` | JSON list of runner images |
+| `pip_install` | `-e .[dev]` | Arguments to `pip install` (pip) |
+| `conda_environment_file` | `environment.yml` | File that installs the project and test dependencies (conda) |
+| `pixi_locked` | `true` | Fail if `pixi.lock` is out of date (pixi) |
+| `tools_artifact_pattern` | `""` | Artifacts from the calling run whose files go on `PATH` |
+| `setup_command` | `""` | Command run in the environment before the tests |
+| `test_command` | `pytest` | Command that runs the tests |
+| `codecov` | `false` | Upload `coverage.xml` to Codecov, flagged by installer and version |
+| `ruff` | `false` | Also run a ruff lint job |
+
+| Secret | Description |
+|---|---|
+| `codecov_token` | Codecov upload token |
 
 ## Versioning
 
@@ -333,9 +403,13 @@ each new compatible release. Breaking changes get `v2`.
 - `test_release_publish.yml` publishes a test prerelease (`v0.0.0-test.<run id>`, never marked latest) from a
   throwaway orphan branch with an attached artifact, checks the tag, notes, asset and branch deletion, then deletes
   the release, tag and branches. The merged-PR trigger path is not covered.
-- `test_release_sync_dev.yml` runs `release_sync_dev` end to end on three throwaway branch pairs (already up to
+- `test_sync_dev.yml` runs `sync_dev` end to end on three throwaway branch pairs (already up to
   date, clean merge, conflict), checks the results and the conflict PR, then deletes the PR and branches. The
   "push rejected" fallback needs branch protection and is not covered. Same triggers and repo setting as above.
+- `test_citation_check.yml` runs `citation_check` on throwaway orphan branches with a valid `CITATION.cff` matching
+  its tag (`required: true`) and with no file, both of which must pass, and checks that the pinned cffconvert
+  rejects an invalid file. The invalid case calls cffconvert directly, since a failing reusable-workflow call would
+  fail the whole test run.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags. It never pushes.
 - Dependabot updates the pinned action SHAs monthly.

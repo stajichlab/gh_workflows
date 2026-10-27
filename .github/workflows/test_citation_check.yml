@@ -1,0 +1,109 @@
+name: Test citation_check
+
+# End-to-end test: run citation_check against throwaway orphan branches: a valid CITATION.cff matching its tag (must
+# pass) and no CITATION.cff (must pass, nothing to check). A reusable-workflow call cannot be allowed to fail, so the
+# invalid-file case runs the same pinned cffconvert directly and expects it to reject the file.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/citation_check.yml
+      - .github/workflows/test_citation_check.yml
+
+concurrency:
+  group: test-citation-check
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  PREFIX: test/citation-${{ github.run_id }}
+  VERSION: 0.0.0-citetest.${{ github.run_id }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      valid: ${{ steps.fixture.outputs.valid }}
+      missing: ${{ steps.fixture.outputs.missing }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create fixture branches and tag
+        id: fixture
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch --orphan "${PREFIX}/valid"
+          cat > CITATION.cff <<CFF
+          cff-version: 1.2.0
+          message: If you use this software, please cite it as below.
+          title: citation_check test
+          authors:
+            - family-names: Test
+              given-names: Fixture
+          version: ${VERSION}
+          date-released: '2026-01-01'
+          CFF
+          git add CITATION.cff
+          git commit -m "Valid citation fixture"
+          git tag "v${VERSION}"
+
+          git switch --orphan "${PREFIX}/missing"
+          git commit --allow-empty -m "No citation fixture"
+
+          git push origin "${PREFIX}/valid" "${PREFIX}/missing" "v${VERSION}"
+          echo "valid=${PREFIX}/valid" >> "$GITHUB_OUTPUT"
+          echo "missing=${PREFIX}/missing" >> "$GITHUB_OUTPUT"
+
+  valid:
+    needs: setup
+    uses: ./.github/workflows/citation_check.yml
+    with:
+      ref: ${{ needs.setup.outputs.valid }}
+      required: true
+
+  missing:
+    needs: setup
+    uses: ./.github/workflows/citation_check.yml
+    with:
+      ref: ${{ needs.setup.outputs.missing }}
+
+  invalid:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout citation_check
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/workflows/citation_check.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Expect cffconvert to reject an invalid file
+        run: |
+          # Same cffconvert version as citation_check's default
+          version=$(grep -A4 'cffconvert_version:' .github/workflows/citation_check.yml | sed -n 's/^ *default: "\(.*\)"/\1/p')
+          [ -n "$version" ] || { echo "::error::could not read cffconvert_version default"; exit 1; }
+          printf 'cff-version: 1.2.0\ntitle: missing required authors and message\n' > CITATION.cff
+          if pipx run "cffconvert==${version}" --validate --infile CITATION.cff; then
+            echo "::error::cffconvert ${version} accepted an invalid CITATION.cff"
+            exit 1
+          fi
+
+  cleanup:
+    needs: [setup, valid, missing]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete fixture branches and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          for ref in "heads/${PREFIX}/valid" "heads/${PREFIX}/missing" "tags/v${VERSION}"; do
+            gh api -X DELETE "repos/${REPO}/git/refs/${ref}" || true
+          done

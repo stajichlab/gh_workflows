@@ -1,4 +1,4 @@
-name: Prepare release
+name: Release prepare
 
 # Reusable workflow: compute the next version from the latest v* tag, validate it against the Keep a Changelog file
 # (if present), bump the changelog, run the caller's version bump command, update CITATION.cff, then commit to a

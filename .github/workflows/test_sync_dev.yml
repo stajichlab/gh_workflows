@@ -1,7 +1,7 @@
-name: Test release_sync_dev
+name: Test sync_dev
 
 # End-to-end test: build throwaway source/target branch pairs (orphan, so they share only the fixture history) for
-# three cases (already up to date, clean merge, conflict), run release_sync_dev on each, check the results, then
+# three cases (already up to date, clean merge, conflict), run sync_dev on each, check the results, then
 # delete everything it created. The "push rejected" fallback needs branch protection and is not covered here.
 
 on:
@@ -9,11 +9,11 @@ on:
   push:
     branches: [main]
     paths:
-      - .github/workflows/release_sync_dev.yml
-      - .github/workflows/test_release_sync_dev.yml
+      - .github/workflows/sync_dev.yml
+      - .github/workflows/test_sync_dev.yml
 
 concurrency:
-  group: test-release-sync-dev
+  group: test-sync-dev
   cancel-in-progress: false
 
 permissions:
@@ -70,21 +70,21 @@ jobs:
 
   sync-uptodate:
     needs: setup
-    uses: ./.github/workflows/release_sync_dev.yml
+    uses: ./.github/workflows/sync_dev.yml
     with:
       source_branch: ${{ needs.setup.outputs.prefix }}/uptodate-src
       target_branch: ${{ needs.setup.outputs.prefix }}/uptodate-dst
 
   sync-merge:
     needs: setup
-    uses: ./.github/workflows/release_sync_dev.yml
+    uses: ./.github/workflows/sync_dev.yml
     with:
       source_branch: ${{ needs.setup.outputs.prefix }}/merge-src
       target_branch: ${{ needs.setup.outputs.prefix }}/merge-dst
 
   sync-conflict:
     needs: setup
-    uses: ./.github/workflows/release_sync_dev.yml
+    uses: ./.github/workflows/sync_dev.yml
     with:
       source_branch: ${{ needs.setup.outputs.prefix }}/conflict-src
       target_branch: ${{ needs.setup.outputs.prefix }}/conflict-dst
