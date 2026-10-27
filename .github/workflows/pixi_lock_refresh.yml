@@ -1,0 +1,89 @@
+name: Refresh pixi.lock
+
+# Reusable workflow: Dependabot bumps dependencies in pyproject.toml / pixi.toml but does not update pixi.lock.
+# Regenerate the lock file and push it to the pull request branch, so the PR stays installable with
+# `pixi install --locked`. Call it from a workflow triggered by `pull_request` (with a paths filter on the
+# manifests); by default it only acts on Dependabot PRs from this repository.
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Directory containing the pixi manifest and pixi.lock"
+        required: false
+        type: string
+        default: "."
+      pixi_version:
+        description: "pixi version to install (e.g. v0.50.0); latest if empty"
+        required: false
+        type: string
+        default: ""
+      dependabot_only:
+        description: "Only act on pull requests opened by Dependabot"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      token:
+        description: "Token used to push (GitHub App or PAT, stored as a Dependabot secret) so the push triggers CI; defaults to GITHUB_TOKEN"
+        required: false
+    outputs:
+      updated:
+        description: "Whether pixi.lock changed and was pushed ('true'/'false')"
+        value: ${{ jobs.refresh.outputs.updated }}
+
+jobs:
+  refresh:
+    name: Refresh pixi.lock
+    runs-on: ubuntu-latest
+    # Only same-repository PRs can be pushed to; github.actor is the caller's (the PR's) actor
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (!inputs.dependabot_only || github.actor == 'dependabot[bot]')
+    concurrency:
+      group: pixi-lock-refresh-${{ github.head_ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+    outputs:
+      updated: ${{ steps.push.outputs.updated }}
+
+    steps:
+      - name: Checkout pull request branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.token || github.token }}
+          # Full history without old file contents, so version tools such as versioningit can resolve the version
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@ad1da6449d9e506fd127fd67ab2d054a769f6a94 # v0.11.2
+        with:
+          pixi-version: ${{ inputs.pixi_version || 'latest' }}
+          working-directory: ${{ inputs.working_directory }}
+          run-install: false
+
+      - name: Update pixi.lock
+        working-directory: ${{ inputs.working_directory }}
+        run: pixi lock
+
+      - name: Commit and push pixi.lock
+        id: push
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if git diff --quiet -- pixi.lock; then
+            echo "pixi.lock is already up to date"
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pixi.lock
+          git commit -m "Update pixi.lock"
+          git push origin "HEAD:${HEAD_REF}"
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "Pushed updated pixi.lock to ${HEAD_REF}" >> "$GITHUB_STEP_SUMMARY"

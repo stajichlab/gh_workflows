@@ -225,6 +225,45 @@ The checkout includes full history and tags, so version tools such as versioning
 the build (the `.git` directory must not be excluded by `.dockerignore` for that). The first push of a new GHCR
 image creates it as private; change its visibility in the package settings.
 
+## pixi_lock_refresh
+
+Dependabot bumps dependencies in `pyproject.toml` / `pixi.toml` but does not update `pixi.lock`. This regenerates
+the lock file on the pull request branch and pushes it, so the PR stays installable with `pixi install --locked`.
+It does nothing if the lock file is already current, and by default only acts on Dependabot PRs from the same
+repository.
+
+```yaml
+name: Refresh pixi.lock
+on:
+  pull_request:
+    paths: [pyproject.toml, pixi.toml]
+
+jobs:
+  refresh:
+    uses: stajichlab/gh_workflows/.github/workflows/pixi_lock_refresh.yml@v1
+    permissions:
+      contents: write   # Dependabot runs get a read-only token unless the caller grants write
+```
+
+| Input | Default | Description |
+|---|---|---|
+| `working_directory` | `.` | Directory with the manifest and `pixi.lock` |
+| `pixi_version` | latest | pixi version to install |
+| `dependabot_only` | `true` | Only act on Dependabot PRs |
+
+| Secret | Description |
+|---|---|
+| `token` | Optional GitHub App token or PAT. Workflows triggered by Dependabot can only read **Dependabot secrets**, so store it there. |
+
+Outputs: `updated`.
+
+**Things to know.**
+- A push made with `GITHUB_TOKEN` does not trigger workflows, so the PR's CI does not rerun on the lock-file
+  commit. If CI checks are required for merging, pass `token`, or the PR waits on checks that never run for its
+  latest commit.
+- Once someone else has pushed to a Dependabot branch, Dependabot stops rebasing it automatically. Comment
+  `@dependabot recreate` to start over (the lock file is refreshed again on the new PR).
+
 ## Versioning
 
 Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to
