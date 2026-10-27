@@ -134,10 +134,25 @@ jobs:
           PR_URL: ${{ needs.sync-conflict.outputs.pr_url }}
         run: |
           if [ -n "$PR_URL" ]; then gh pr close "$PR_URL" --repo "$REPO" || true; fi
+          failed=0
+          # Deletes refs/<$1>. A ref that is already gone is fine; any other error fails the job after all deletions
+          # have been attempted, so leftovers are noticed.
+          delete_ref() {
+            local out
+            if out=$(gh api -X DELETE "repos/${REPO}/git/refs/$1" 2>&1); then
+              echo "Deleted $1"
+            elif grep -q "Reference does not exist" <<<"$out"; then
+              echo "Already gone: $1"
+            else
+              echo "::error::Could not delete $1: $out"
+              failed=1
+            fi
+          }
           # Fixture branches and the sync/* branch created for the conflict case
           for prefix in "$PREFIX" "sync/${PREFIX}"; do
-            gh api "repos/${REPO}/git/matching-refs/heads/${prefix}" --jq '.[].ref' |
-              while read -r ref; do
-                gh api -X DELETE "repos/${REPO}/git/${ref#refs/}" || true
-              done
+            mapfile -t refs < <(gh api "repos/${REPO}/git/matching-refs/heads/${prefix}" --jq '.[].ref')
+            for ref in "${refs[@]}"; do
+              delete_ref "${ref#refs/}"
+            done
           done
+          exit "$failed"

@@ -102,4 +102,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        run: gh api -X DELETE "repos/${REPO}/git/refs/heads/${BASE}" || true
+        run: |
+          failed=0
+          # Deletes refs/<$1>. A ref that is already gone is fine; any other error fails the job after all deletions
+          # have been attempted, so leftovers are noticed.
+          delete_ref() {
+            local out
+            if out=$(gh api -X DELETE "repos/${REPO}/git/refs/$1" 2>&1); then
+              echo "Deleted $1"
+            elif grep -q "Reference does not exist" <<<"$out"; then
+              echo "Already gone: $1"
+            else
+              echo "::error::Could not delete $1: $out"
+              failed=1
+            fi
+          }
+          delete_ref "heads/${BASE}"
+          exit "$failed"

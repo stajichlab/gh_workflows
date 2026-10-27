@@ -123,6 +123,23 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           if [ -n "$PR_URL" ]; then gh pr close "$PR_URL" --repo "$REPO" || true; fi
-          for ref in "heads/release/v${VERSION}" "heads/${BASE}" "tags/${PREVIOUS_TAG}"; do
-            gh api -X DELETE "repos/${REPO}/git/refs/${ref}" || true
+          failed=0
+          # Deletes refs/<$1>. A ref that is already gone is fine; any other error fails the job after all deletions
+          # have been attempted, so leftovers are noticed.
+          delete_ref() {
+            local out
+            if out=$(gh api -X DELETE "repos/${REPO}/git/refs/$1" 2>&1); then
+              echo "Deleted $1"
+            elif grep -q "Reference does not exist" <<<"$out"; then
+              echo "Already gone: $1"
+            else
+              echo "::error::Could not delete $1: $out"
+              failed=1
+            fi
+          }
+          refs=("heads/${BASE}" "tags/${PREVIOUS_TAG}")
+          if [ -n "$VERSION" ]; then refs+=("heads/release/v${VERSION}"); fi
+          for ref in "${refs[@]}"; do
+            delete_ref "$ref"
           done
+          exit "$failed"
