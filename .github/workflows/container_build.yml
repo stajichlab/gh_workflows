@@ -192,8 +192,8 @@ jobs:
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ steps.resolve.outputs.image }}
+          cache-to: type=gha,scope=${{ steps.resolve.outputs.image }},mode=max,ignore-error=true
 
       - name: Smoke test image
         if: inputs.smoke_test_args != ''
@@ -217,7 +217,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=${{ steps.resolve.outputs.image }}
 
       - name: Summary
         env:
