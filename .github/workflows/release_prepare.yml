@@ -31,11 +31,6 @@ on:
         required: false
         type: string
         default: ""
-      cffconvert_version:
-        description: "cffconvert version used to validate CITATION.cff after the bump (keep in step with citation_check)"
-        required: false
-        type: string
-        default: "2.0.0"
       draft:
         description: "Open the release pull request as a draft"
         required: false
@@ -66,6 +61,10 @@ on:
       pr_url:
         description: "URL of the release pull request"
         value: ${{ jobs.prepare.outputs.pr_url }}
+
+env:
+  # cffconvert used to validate CITATION.cff; keep in step with citation_check.yml
+  CFFCONVERT_VERSION: "2.0.0"
 
 jobs:
   prepare:
@@ -222,8 +221,6 @@ jobs:
 
       - name: Validate citation
         if: hashFiles('CITATION.cff') != ''
-        env:
-          CFFCONVERT_VERSION: ${{ inputs.cffconvert_version }}
         run: |
           # Checks the file exactly as it will be committed, so an invalid citation never reaches the release PR
           if ! pipx run "cffconvert==${CFFCONVERT_VERSION}" --validate --infile CITATION.cff; then

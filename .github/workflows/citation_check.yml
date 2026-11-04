@@ -22,11 +22,10 @@ on:
         required: false
         type: boolean
         default: false
-      cffconvert_version:
-        description: "cffconvert version used for validation"
-        required: false
-        type: string
-        default: "2.0.0"
+
+env:
+  # cffconvert used to validate CITATION.cff; keep in step with release_prepare.yml
+  CFFCONVERT_VERSION: "2.0.0"
 
 jobs:
   check:
@@ -63,7 +62,6 @@ jobs:
         if: steps.exists.outputs.exists == 'true'
         env:
           CITATION: ${{ inputs.citation_path }}
-          CFFCONVERT_VERSION: ${{ inputs.cffconvert_version }}
         run: pipx run "cffconvert==${CFFCONVERT_VERSION}" --validate --infile "$CITATION"
 
       - name: Compare version with latest tag

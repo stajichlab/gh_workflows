@@ -57,7 +57,7 @@ jobs:
       image: ghcr.io/${{ github.repository_owner }}/container-build-test
       build_args: GREETING=smoke-ok
       smoke_test_args: --version
-      latest: true
+      # latest is left at its default (true) so the test covers it
       extra_tags: testing
       push: false
 

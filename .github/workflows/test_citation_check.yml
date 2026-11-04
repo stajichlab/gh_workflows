@@ -85,9 +85,9 @@ jobs:
 
       - name: Expect cffconvert to reject an invalid file
         run: |
-          # Same cffconvert version as citation_check's default
-          version=$(grep -A4 'cffconvert_version:' .github/workflows/citation_check.yml | sed -n 's/^ *default: "\(.*\)"/\1/p')
-          [ -n "$version" ] || { echo "::error::could not read cffconvert_version default"; exit 1; }
+          # Same cffconvert version as citation_check
+          version=$(sed -n 's/^ *CFFCONVERT_VERSION: "\(.*\)"/\1/p' .github/workflows/citation_check.yml)
+          [ -n "$version" ] || { echo "::error::could not read CFFCONVERT_VERSION from citation_check.yml"; exit 1; }
           printf 'cff-version: 1.2.0\ntitle: missing required authors and message\n' > CITATION.cff
           if pipx run "cffconvert==${version}" --validate --infile CITATION.cff; then
             echo "::error::cffconvert ${version} accepted an invalid CITATION.cff"

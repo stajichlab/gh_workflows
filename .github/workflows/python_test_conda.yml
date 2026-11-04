@@ -1,0 +1,58 @@
+name: Python test (conda)
+
+# Reusable workflow: run a Python project's tests in a conda (micromamba) environment.
+# Thin wrapper over python_test.yml (internal), called by local path so both come from the same commit.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to test; defaults to the commit that triggered the caller"
+        required: false
+        type: string
+        default: ""
+      python_versions:
+        description: "JSON list of Python versions; [\"\"] uses the version from the environment file"
+        required: false
+        type: string
+        default: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
+      environment_file:
+        description: "Environment file that installs the project and its test dependencies"
+        required: false
+        type: string
+        default: environment.yml
+      runs_on:
+        description: "JSON list of runner images"
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      tools_artifact_pattern:
+        description: "Pattern of artifacts from the calling run whose files are added to PATH (e.g. tool-*)"
+        required: false
+        type: string
+        default: ""
+      test_command:
+        description: "Bash script that runs the tests inside the environment; may span several lines (set -euo pipefail)"
+        required: false
+        type: string
+        default: pytest
+    secrets:
+      codecov_token:
+        description: "Codecov upload token; when set, coverage.xml is uploaded (test_command must write it, e.g. pytest --cov --cov-report=xml)"
+        required: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/python_test.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ inputs.ref }}
+      installer: conda
+      targets: ${{ inputs.python_versions }}
+      conda_environment_file: ${{ inputs.environment_file }}
+      runs_on: ${{ inputs.runs_on }}
+      tools_artifact_pattern: ${{ inputs.tools_artifact_pattern }}
+      test_command: ${{ inputs.test_command }}
+    secrets:
+      codecov_token: ${{ secrets.codecov_token }}

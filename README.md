@@ -16,7 +16,7 @@ Reusable GitHub Actions workflows for stajichlab repositories.
 | [`pixi_lock_refresh`](#pixi_lock_refresh) | Refresh `pixi.lock` on Dependabot PRs |
 | [`changelog_check`](#changelog_check) | Require a changelog entry on PRs |
 | [`citation_check`](#citation_check) | Validate `CITATION.cff` |
-| [`python_test`](#python_test) | Run Python tests with pip, conda or pixi |
+| [`python_test_pip` / `_conda` / `_pixi`](#python_test) | Run Python tests with pip, conda or pixi |
 
 > [!NOTE]
 > **For this repo only, not for callers:** `release.yml`, `publish.yml`, `changelog.yml`, `lint.yml` and the
@@ -134,7 +134,6 @@ the run fail if a file didn't contain the expected line:
 | `additional_bump_command` | `""` | Shell command that updates version strings; runs with `$VERSION` set |
 | `changelog_path` | `CHANGELOG.md` | Changelog location; skipped if missing |
 | `base_branch` | `main` | Branch to release from and PR target |
-| `cffconvert_version` | `2.0.0` | cffconvert version used to validate `CITATION.cff` after the bump |
 | `draft` | `false` | Open the PR as a draft |
 | `reviewers` | `""` | Comma-separated users or `org/team` slugs to request review from |
 
@@ -233,7 +232,6 @@ jobs:
       packages: write
     with:
       ref: ${{ needs.publish.outputs.tag }}
-      latest: true   # ignored for prereleases
 
   sync-dev:
     needs: publish
@@ -393,7 +391,7 @@ image, then pushes it (to GHCR by default). Tags:
 |---|---|
 | `1.2.3` | a version is given, or `ref` looks like `v1.2.3` |
 | `1.2` | same, but not for prereleases |
-| `latest` | `latest: true`, but not for prereleases |
+| `latest` | a stable version (not a prerelease), unless `latest: false` |
 | `sha-<short sha>` | always |
 | extra tags | from `extra_tags` |
 
@@ -419,7 +417,6 @@ exact version:
       packages: write
     with:
       ref: ${{ needs.publish.outputs.tag }}
-      latest: true
       smoke_test_args: --help
 ```
 
@@ -483,7 +480,6 @@ jobs:
       platforms: linux/amd64,linux/arm64
       build_args: |
         CONDA_ENV=environment.yml
-      latest: true
     secrets:
       registry_username: ${{ secrets.DOCKERHUB_USERNAME }}
       registry_password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -501,7 +497,7 @@ jobs:
 | `build_args` | `""` | Newline-separated `NAME=value` |
 | `platforms` | `linux/amd64` | Platforms to push; QEMU is set up for anything else |
 | `smoke_test_args` | `""` | Arguments for `docker run --rm <image>`; skipped if empty |
-| `latest` | `false` | Tag as `latest` (ignored for prereleases) |
+| `latest` | `true` | Tag stable versioned builds as `latest`; never prereleases or unversioned builds |
 | `extra_tags` | `""` | Newline-separated extra tags |
 | `push` | `true` | Push; if `false`, only build and smoke-test |
 
@@ -526,7 +522,7 @@ repository.
 
 - Your repo uses pixi with a committed `pixi.lock`, and Dependabot updates dependencies in `pyproject.toml` or
   `pixi.toml`.
-- CI installs with `--locked` (as `python_test` does by default), so Dependabot PRs fail until the lock file is
+- CI installs with `--locked` (as `python_test_pixi` always does), so Dependabot PRs fail until the lock file is
   regenerated.
 
 ### Examples
@@ -710,13 +706,23 @@ jobs:
 | `ref` | triggering commit | Branch, tag or commit to check |
 | `citation_path` | `CITATION.cff` | Citation file location |
 | `required` | `false` | Fail if the file is missing |
-| `cffconvert_version` | `2.0.0` | cffconvert version used to validate |
 
 ## python_test
 
-Runs a Python project's tests across a matrix, installing it with pip, conda (micromamba) or pixi. One workflow
-replaces separate per-installer CI workflows; call it once per installer. Optionally lints with ruff, puts
-externally built tools from artifacts on `PATH`, and uploads coverage to Codecov.
+Runs a Python project's tests across a matrix. There is one workflow per installer:
+
+| Workflow | Installs with | Matrix input |
+|---|---|---|
+| `python_test_pip.yml` | pip | `python_versions` |
+| `python_test_conda.yml` | conda (micromamba) | `python_versions` |
+| `python_test_pixi.yml` | pixi (`--locked`) | `environments` |
+
+Call one per installer you support. All three share the same test steps, so they behave the same apart from the
+install. Each can put externally built tools from artifacts on `PATH` and upload coverage to Codecov.
+
+> [!NOTE]
+> `python_test.yml` is the internal core the three wrappers call. It is not part of the public interface and its
+> inputs may change in any release; call the wrappers instead.
 
 ### Use it when
 
@@ -739,19 +745,24 @@ on:
 
 jobs:
   test:
-    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/python_test_pip.yml@v2
 ```
 
-**Linux and macOS, two Python versions, with ruff:**
+**Linux and macOS, two Python versions, with a ruff lint job:**
 
 ```yaml
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4
+
   test:
-    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/python_test_pip.yml@v2
     with:
       runs_on: '["ubuntu-latest", "macos-latest"]'
       python_versions: '["3.11", "3.13"]'
-      ruff: true
 ```
 
 **All three installers, external tools and coverage** (Phyling's setup):
@@ -773,28 +784,26 @@ jobs:
 
   pip:
     needs: build-tools
-    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/python_test_pip.yml@v2
     with:
-      ruff: true
       tools_artifact_pattern: tool-*
       test_command: pytest --cov --cov-report=xml
-      codecov: true
-    secrets:
+    secrets:   # passing the token turns on the Codecov upload
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
   conda:
-    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/python_test_conda.yml@v2
     with:
-      installer: conda
-      conda_environment_file: dev_environment.yml
+      environment_file: dev_environment.yml
       python_versions: '[""]'   # use the Python pinned in the file
 
   pixi:
-    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/python_test_pixi.yml@v2
     with:
-      installer: pixi
-      pixi_environments: '["dev"]'
-      setup_command: command -v astral && command -v fasttree && command -v iqtree
+      environments: '["dev"]'
+      test_command: |
+        command -v astral && command -v fasttree && command -v iqtree
+        pytest
 ```
 
 **Several pixi environments** (for example one per Python version, defined in `pixi.toml`), running a pixi task:
@@ -802,37 +811,40 @@ jobs:
 ```yaml
 jobs:
   test:
-    uses: stajichlab/gh_workflows/.github/workflows/python_test.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/python_test_pixi.yml@v2
     with:
-      installer: pixi
-      pixi_environments: '["py310", "py313"]'
+      environments: '["py310", "py313"]'
       test_command: pixi run test
 ```
 
 ### Reference
 
-`setup_command` and `test_command` run with bash inside the installed environment (the pip Python, the conda
-environment, or the pixi environment), so they see its packages and tools.
+`test_command` runs as a bash script (`set -euo pipefail`) inside the installed environment (the pip Python, the
+conda environment, or the pixi environment), so it sees its packages and tools. Put any setup lines before the
+tests in the same script.
+
+Inputs shared by all three:
 
 | Input | Default | Description |
 |---|---|---|
 | `ref` | triggering commit | Branch, tag or commit to test |
-| `installer` | `pip` | `pip`, `conda` or `pixi` |
-| `python_versions` | `["3.10", …, "3.14"]` | JSON list (pip, conda). For conda, `[""]` uses the file's Python |
-| `pixi_environments` | `["default"]` | JSON list of pixi environments (pixi) |
 | `runs_on` | `["ubuntu-latest"]` | JSON list of runner images |
-| `pip_install` | `-e .[dev]` | Arguments to `pip install` (pip) |
-| `conda_environment_file` | `environment.yml` | File that installs the project and test dependencies (conda) |
-| `pixi_locked` | `true` | Fail if `pixi.lock` is out of date (pixi) |
 | `tools_artifact_pattern` | `""` | Artifacts from the calling run whose files go on `PATH` |
-| `setup_command` | `""` | Command run in the environment before the tests |
-| `test_command` | `pytest` | Command that runs the tests |
-| `codecov` | `false` | Upload `coverage.xml` to Codecov, flagged by installer and version |
-| `ruff` | `false` | Also run a ruff lint job |
+| `test_command` | `pytest` | Bash script that runs the tests (may span several lines) |
+
+Installer-specific inputs:
+
+| Workflow | Input | Default | Description |
+|---|---|---|---|
+| pip | `python_versions` | `["3.10", …, "3.14"]` | JSON list of Python versions |
+| pip | `pip_install` | `-e .[dev]` | Arguments to `pip install` |
+| conda | `python_versions` | `["3.10", …, "3.14"]` | JSON list of Python versions; `[""]` uses the file's Python |
+| conda | `environment_file` | `environment.yml` | File that installs the project and test dependencies |
+| pixi | `environments` | `["default"]` | JSON list of pixi environments |
 
 | Secret | Description |
 |---|---|
-| `codecov_token` | Codecov upload token |
+| `codecov_token` | Codecov upload token. When passed, `coverage.xml` is uploaded, flagged by installer and target |
 
 ## Versioning
 
@@ -875,8 +887,8 @@ The first release is `major` from no tags, giving `v1.0.0` and `v1`.
   rejects an invalid file. The invalid case calls cffconvert directly, since a failing reusable-workflow call would
   fail the whole test run.
 - `test_python_test.yml` builds a tiny package on a throwaway orphan branch (with a conda environment file and a
-  freshly generated `pixi.lock`) and runs `python_test` against it with pip (two Python versions, ruff, and a fake
-  tool from an artifact on `PATH`), conda and pixi. The test commands check that they run inside the right
+  freshly generated `pixi.lock`) and runs the `python_test_pip`, `_conda` and `_pixi` wrappers against it (pip with
+  two Python versions and a fake tool from an artifact on `PATH`). The test commands check that they run inside the right
   environment and Python version.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags. It never pushes.

@@ -1,8 +1,8 @@
 name: Container build
 
 # Reusable workflow: build a container image from a ref, smoke-test it locally, then (optionally) push it to GHCR
-# with version, major.minor, latest and extra tags. Prereleases get only their exact version tag, never major.minor
-# or latest.
+# with version, major.minor, latest and extra tags. latest is on by default for stable versioned builds. Prereleases
+# get only their exact version tag, and unversioned builds never get major.minor or latest.
 
 on:
   workflow_call:
@@ -48,10 +48,10 @@ on:
         type: string
         default: ""
       latest:
-        description: "Also tag as latest (ignored for prereleases)"
+        description: "Tag stable versioned builds as latest (never prereleases or unversioned builds); false keeps latest on another release line"
         required: false
         type: boolean
-        default: false
+        default: true
       extra_tags:
         description: "Newline-separated extra tags (e.g. testing)"
         required: false
@@ -124,7 +124,8 @@ jobs:
             fi
           fi
           latest=false
-          if [ "$INPUT_LATEST" = true ] && [ "$prerelease" = false ]; then latest=true; fi
+          # Only stable versioned builds get latest, so branch and test images never take it
+          if [ "$INPUT_LATEST" = true ] && [ -n "$version" ] && [ "$prerelease" = false ]; then latest=true; fi
 
           image="${INPUT_IMAGE:-ghcr.io/${REPO,,}}"
           echo "Building ${image} from ${ref} (version: ${version:-none}, latest: ${latest})"

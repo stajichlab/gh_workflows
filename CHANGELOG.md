@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `python_test` is split into `python_test_pip`, `python_test_conda` and `python_test_pixi`, each
+  exposing only its installer's inputs (`installer` is gone; pixi takes `environments`, conda takes
+  `environment_file`). `python_test.yml` becomes their internal shared core and is no longer a public interface.
+- **Breaking:** `container_build`: `latest` now defaults to `true`, so stable versioned builds are tagged `latest`
+  unless the caller passes `latest: false`. Builds without a version are never tagged `latest`.
+- **Breaking:** `python_test`: the Codecov upload now runs whenever the `codecov_token` secret is passed; the
+  `codecov` input is removed.
+
+### Removed
+
+- **Breaking:** `python_test`: `setup_command`; put setup lines at the top of the multi-line `test_command`.
+- **Breaking:** `python_test`: `pixi_locked`; pixi always installs with `--locked`.
+- **Breaking:** `python_test`: `ruff` and its lint job; add a job using `astral-sh/ruff-action` in the caller.
+- **Breaking:** `release_prepare` and `citation_check`: `cffconvert_version`; both now use the cffconvert version
+  pinned in this repo, so they always validate the same way.
+
 ## [1.0.0] - 2026-10-27
 
 ### Added

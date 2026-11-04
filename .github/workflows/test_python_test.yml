@@ -1,8 +1,8 @@
 name: Test python_test
 
 # End-to-end test: build a tiny Python package on a throwaway orphan branch (with a conda environment file and a
-# freshly generated pixi.lock), upload a fake external tool as an artifact, then run python_test against it with
-# pip (plus ruff and the tool on PATH), conda and pixi. Each call fails if its tests fail; the branch is deleted
+# freshly generated pixi.lock), upload a fake external tool as an artifact, then run the python_test_pip, _conda and
+# _pixi wrappers against it with pip (with the tool on PATH), conda and pixi. Each call fails if its tests fail; the branch is deleted
 # afterwards.
 
 on:
@@ -11,6 +11,9 @@ on:
     branches: [main]
     paths:
       - .github/workflows/python_test.yml
+      - .github/workflows/python_test_pip.yml
+      - .github/workflows/python_test_conda.yml
+      - .github/workflows/python_test_pixi.yml
       - .github/workflows/test_python_test.yml
 
 concurrency:
@@ -118,22 +121,22 @@ jobs:
 
   pip:
     needs: setup
-    uses: ./.github/workflows/python_test.yml
+    uses: ./.github/workflows/python_test_pip.yml
     with:
       ref: ${{ needs.setup.outputs.ref }}
       python_versions: '["3.10", "3.13"]'
-      ruff: true
       tools_artifact_pattern: tool-*
-      # Fails unless the tool artifact is on PATH and executable
-      setup_command: fixture-tool
-      test_command: python -c "import fixturepkg, sys; print(sys.version)" && pytest -v
+      # fixture-tool fails unless the tool artifact is on PATH and executable
+      test_command: |
+        fixture-tool
+        python -c "import fixturepkg, sys; print(sys.version)"
+        pytest -v
 
   conda:
     needs: setup
-    uses: ./.github/workflows/python_test.yml
+    uses: ./.github/workflows/python_test_conda.yml
     with:
       ref: ${{ needs.setup.outputs.ref }}
-      installer: conda
       python_versions: '["3.12"]'
       # Fails unless the tests run inside the conda environment with the requested Python
       test_command: |
@@ -143,10 +146,9 @@ jobs:
 
   pixi:
     needs: setup
-    uses: ./.github/workflows/python_test.yml
+    uses: ./.github/workflows/python_test_pixi.yml
     with:
       ref: ${{ needs.setup.outputs.ref }}
-      installer: pixi
       # Fails unless the tests run inside the pixi environment
       test_command: |
         python -c 'import fixturepkg, sys; assert "/.pixi/envs/default" in sys.prefix, sys.prefix'
