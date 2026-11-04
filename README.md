@@ -17,6 +17,7 @@ Reusable GitHub Actions workflows for stajichlab repositories.
 | [`changelog_check`](#changelog_check) | Require a changelog entry on PRs |
 | [`citation_check`](#citation_check) | Validate `CITATION.cff` |
 | [`python_test_pip` / `_conda` / `_pixi`](#python_test) | Run Python tests with pip, conda or pixi |
+| [`bioconda_recipe_check`](#bioconda_recipe_check) | Open an issue when the repo's conda recipe differs from bioconda's |
 
 > [!NOTE]
 > **For this repo only, not for callers:** `release.yml`, `publish.yml`, `changelog.yml`, `lint.yml` and the
@@ -846,6 +847,57 @@ Installer-specific inputs:
 |---|---|
 | `codecov_token` | Codecov upload token. When passed, `coverage.xml` is uploaded, flagged by installer and target |
 
+## bioconda_recipe_check
+
+Checks that the conda recipe kept in your repo is identical to the one in
+[bioconda-recipes](https://github.com/bioconda/bioconda-recipes). If they differ, it opens an issue with the diff
+(or updates the open one); once they match again, it closes the issue. It only reports: the maintainer opens the
+bioconda-recipes PR by hand.
+
+The comparison is exact, line for line, so any difference is reported, including a version bump that bioconda's
+autobump PR has not merged yet.
+
+### Use it when
+
+- Your repo keeps a copy of its bioconda recipe, and you want to know when the two drift apart.
+
+### Examples
+
+**Weekly check:**
+
+```yaml
+# .github/workflows/bioconda-check.yml
+name: Bioconda recipe check
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays
+  workflow_dispatch:
+
+jobs:
+  check:
+    uses: stajichlab/gh_workflows/.github/workflows/bioconda_recipe_check.yml@v2
+    permissions:
+      contents: read
+      issues: write
+    with:
+      recipe_path: conda/meta.yaml
+      bioconda_recipe_path: recipes/phyling/meta.yaml   # only if not recipes/<repo name>/meta.yaml
+```
+
+### Reference
+
+| Input | Default | Description |
+|---|---|---|
+| `recipe_path` | required | Path to the recipe in your repo |
+| `bioconda_recipe_path` | `recipes/<repo name, lowercased>/meta.yaml` | Path to the recipe in bioconda-recipes |
+| `ref` | triggering commit | Branch, tag or commit to read the recipe from |
+
+| Output | Description |
+|---|---|
+| `differs` | `true` if the recipes differ, `false` if they are identical |
+
+Needs `issues: write` (and `contents: read`). The diff also appears in the run's job summary.
+
 ## Versioning
 
 Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to
@@ -890,6 +942,8 @@ The first release is `major` from no tags, giving `v1.0.0` and `v1`.
   freshly generated `pixi.lock`) and runs the `python_test_pip`, `_conda` and `_pixi` wrappers against it (pip with
   two Python versions and a fake tool from an artifact on `PATH`). The test commands check that they run inside the right
   environment and Python version.
+- `test_bioconda_recipe_check.yml` copies phyling's live bioconda recipe onto a throwaway orphan branch and checks
+  that it is reported as identical. The different-recipe case is not run, since it would open a real issue.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags. It never pushes.
 - Dependabot updates the pinned action SHAs monthly.

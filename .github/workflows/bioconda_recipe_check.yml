@@ -1,0 +1,103 @@
+name: Bioconda recipe check
+
+# Reusable workflow: check that the conda recipe kept in the calling repo is identical to the one in
+# bioconda/bioconda-recipes. If they differ, open an issue with the diff (or update the open one); once they match
+# again, close it. It only reports: the maintainer opens the bioconda-recipes PR by hand. Needs `issues: write`.
+
+on:
+  workflow_call:
+    inputs:
+      recipe_path:
+        description: "Path to the recipe in the calling repo"
+        required: true
+        type: string
+      bioconda_recipe_path:
+        description: "Path to the recipe in bioconda-recipes; defaults to recipes/<repository name, lowercased>/meta.yaml"
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: "Branch, tag or commit to read the recipe from; defaults to the commit that triggered the caller"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      differs:
+        description: "true if the recipes differ, false if they are identical"
+        value: ${{ jobs.check.outputs.differs }}
+
+jobs:
+  check:
+    name: Compare with bioconda
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      differs: ${{ steps.compare.outputs.differs }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Compare recipes
+        id: compare
+        env:
+          RECIPE: ${{ inputs.recipe_path }}
+          BIOCONDA_PATH: ${{ inputs.bioconda_recipe_path }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          path="${BIOCONDA_PATH:-recipes/${REPO_NAME,,}/meta.yaml}"
+          url="https://github.com/bioconda/bioconda-recipes/blob/master/${path}"
+          curl -fsSL "https://raw.githubusercontent.com/bioconda/bioconda-recipes/master/${path}" \
+            -o "$RUNNER_TEMP/bioconda.yaml" || { echo "::error::Could not fetch ${url}"; exit 1; }
+
+          report="$RUNNER_TEMP/report.md"
+          if diff -u --label "bioconda: ${path}" --label "${RECIPE}" "$RUNNER_TEMP/bioconda.yaml" "$RECIPE" \
+            > "$RUNNER_TEMP/recipe.diff"; then
+            echo "\`${RECIPE}\` is identical to the [bioconda recipe](${url})." > "$report"
+            echo "differs=false" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "\`${RECIPE}\` differs from the [bioconda recipe](${url}):"
+              echo
+              echo '```diff'
+              cat "$RUNNER_TEMP/recipe.diff"
+              echo '```'
+            } > "$report"
+            echo "differs=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$report" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DIFFERS: ${{ steps.compare.outputs.differs }}
+          RECIPE: ${{ inputs.recipe_path }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Conda recipe differs from bioconda: ${RECIPE}"
+          existing=$(gh issue list --state open --search "in:title \"${title}\"" --json number,title \
+            | jq -r --arg t "$title" '.[] | select(.title == $t) | .number' | head -n1)
+
+          if [ "$DIFFERS" != true ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "The recipes are identical again ([run](${RUN_URL}))."
+            fi
+            exit 0
+          fi
+
+          body="$RUNNER_TEMP/issue.md"
+          { cat "$RUNNER_TEMP/report.md"; echo; echo "Found by [this run](${RUN_URL})."; } > "$body"
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file "$body"
+          else
+            gh issue create --title "$title" --body-file "$body"
+          fi

@@ -1,0 +1,87 @@
+name: Test bioconda_recipe_check
+
+# End-to-end test: commit an exact copy of phyling's live bioconda recipe to a throwaway orphan branch and run
+# bioconda_recipe_check against it, which must report the recipes as identical (so no issue is opened). The
+# different-recipe case is not run, since it would open a real issue here. The branch is deleted afterwards.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/bioconda_recipe_check.yml
+      - .github/workflows/test_bioconda_recipe_check.yml
+
+concurrency:
+  group: test-bioconda-recipe-check
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  BASE: test/bioconda-${{ github.run_id }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.fixture.outputs.ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create fixture branch
+        id: fixture
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$BASE"
+          mkdir recipe
+          curl -fsSL https://raw.githubusercontent.com/bioconda/bioconda-recipes/master/recipes/phyling/meta.yaml \
+            -o recipe/meta.yaml
+          git add recipe
+          git commit -m "Test fixture"
+          git push origin "$BASE"
+          echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: setup
+    uses: ./.github/workflows/bioconda_recipe_check.yml
+    permissions:
+      contents: read
+      issues: write
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      recipe_path: recipe/meta.yaml
+      bioconda_recipe_path: recipes/phyling/meta.yaml
+
+  verify:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        env:
+          DIFFERS: ${{ needs.check.outputs.differs }}
+        run: |
+          [ "$DIFFERS" = false ] || { echo "::error::identical recipe reported as different (differs=$DIFFERS)"; exit 1; }
+          echo "Identical recipe reported as identical"
+
+  cleanup:
+    needs: [setup, check, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete fixture branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if out=$(gh api -X DELETE "repos/${REPO}/git/refs/heads/${BASE}" 2>&1); then
+            echo "Deleted ${BASE}"
+          elif grep -q "Reference does not exist" <<<"$out"; then
+            echo "Already gone: ${BASE}"
+          else
+            echo "::error::Could not delete ${BASE}: $out"
+            exit 1
+          fi

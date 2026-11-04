@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `bioconda_recipe_check`: check that the repo's conda recipe is identical to the one in bioconda-recipes, and open
+  an issue with the diff when it is not (closed automatically once they match).
+
 ### Changed
 
 - **Breaking:** `python_test` is split into `python_test_pip`, `python_test_conda` and `python_test_pixi`, each
