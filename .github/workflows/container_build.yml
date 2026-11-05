@@ -280,13 +280,17 @@ jobs:
           TAGS: ${{ needs.build.outputs.tags }}
         run: |
           if [ -z "$DIGEST" ]; then echo "::error::No pushed digest to sign"; exit 1; fi
-          cosign sign --yes "${IMAGE}@${DIGEST}"
+          # Annotate with the sha- tag from this publish, taken from the built tags so it matches what was pushed
+          sha_tag=$(grep -o ':sha-[0-9a-f]*$' <<<"$TAGS" | head -n1 | cut -c2-)
+          if [ -z "$sha_tag" ]; then echo "::error::No sha- tag among the built tags"; exit 1; fi
+          cosign sign --yes -a "sha=${sha_tag}" "${IMAGE}@${DIGEST}"
           signature="${DIGEST/:/-}"
           echo "signature=$signature" >> "$GITHUB_OUTPUT"
           {
             echo "Signed with Cosign:"
             echo "- index digest: \`${DIGEST}\`"
             echo "- signature tag: \`${IMAGE}:${signature}\`"
+            echo "- annotation: \`sha=${sha_tag}\`"
             echo "- tags:"
             while IFS= read -r tag; do
               [ -n "$tag" ] && echo "  - \`${tag}\`"

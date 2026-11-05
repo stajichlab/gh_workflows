@@ -127,6 +127,7 @@ jobs:
           IMAGE: ${{ needs.signed.outputs.image }}
           TAG: signed-${{ github.run_id }}
           REPO: ${{ github.repository }}
+          TAGS: ${{ needs.signed.outputs.tags }}
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: |
@@ -134,6 +135,7 @@ jobs:
           cosign verify \
             --certificate-identity-regexp "https://github.com/${REPO}/.github/workflows/.*" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            -a "sha=$(grep -o ':sha-[0-9a-f]*$' <<<"$TAGS" | head -n1 | cut -c2-)" \
             "${IMAGE}:${TAG}"
 
   cleanup:

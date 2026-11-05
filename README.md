@@ -506,7 +506,8 @@ as well as `packages: write`:
 
 Only the pushed image index is signed (no `--recursive`), as in GitHub's Docker publish starter workflow: signing
 each platform and attestation manifest would add a `sha256-<digest>` signature tag apiece to the package. Tags
-resolve to the index, so verify with:
+resolve to the index, so verify with the command below. The signature is annotated with the publish's `sha-` tag
+(`sha=sha-abc1234`); add `-a sha=sha-abc1234` to require it.
 
 ```sh
 cosign verify \
@@ -749,7 +750,8 @@ as well as `packages: write`:
 
 Only the pushed image index is signed (no `--recursive`), as in GitHub's Docker publish starter workflow: signing
 each platform and attestation manifest would add a `sha256-<digest>` signature tag apiece to the package. Tags
-resolve to the index, so verify with:
+resolve to the index, so verify with the command below. The signature is annotated with the publish's `sha-` tag
+(`sha=sha-abc1234`); add `-a sha=sha-abc1234` to require it.
 
 ```sh
 cosign verify \
