@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `container_build`: `sign` input (default `false`) signs the pushed image index with keyless Cosign (annotated with its `sha-` tag), and a
   `signature` output gives its signature tag. Callers must grant `id-token: write` and `packages: write`.
 
+### Fixed
+
+- `container_build`: the `sha-` tag and `org.opencontainers.image.revision` label now name the built commit, not
+  the commit that triggered the caller (they differed when `ref` pointed elsewhere, e.g. rebuilding an old tag).
+
 ## [2.0.0] - 2026-11-04
 
 ### Added

@@ -183,6 +183,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
+          # git context takes sha (for the sha- tag and revision label) from the checked-out ref, not from the
+          # caller's github.sha, which differs when the caller builds another ref (e.g. rebuilding an old tag)
+          context: git
           images: ${{ steps.resolve.outputs.image }}
           tags: |
             type=raw,value=${{ steps.resolve.outputs.version }},enable=${{ steps.resolve.outputs.version != '' }}

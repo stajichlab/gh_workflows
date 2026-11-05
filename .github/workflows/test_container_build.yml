@@ -30,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ref: ${{ steps.fixture.outputs.ref }}
+      sha: ${{ steps.fixture.outputs.sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,6 +51,7 @@ jobs:
           git commit -m "Test fixture"
           git push origin "$BASE"
           echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   release:
     needs: setup
@@ -91,7 +93,7 @@ jobs:
       sign: true
 
   verify:
-    needs: [release, prerelease, signed]
+    needs: [setup, release, prerelease, signed]
     runs-on: ubuntu-latest
     steps:
       - name: Check tags
@@ -99,6 +101,7 @@ jobs:
           RELEASE_TAGS: ${{ needs.release.outputs.tags }}
           PRERELEASE_TAGS: ${{ needs.prerelease.outputs.tags }}
           IMAGE: ${{ needs.release.outputs.image }}
+          FIXTURE_SHA: ${{ needs.setup.outputs.sha }}
           RELEASE_SIGNATURE: ${{ needs.release.outputs.signature }}
           SIGNED_DIGEST: ${{ needs.signed.outputs.digest }}
           SIGNED_SIGNATURE: ${{ needs.signed.outputs.signature }}
@@ -108,7 +111,10 @@ jobs:
           for t in 1.2.3 1.2 latest testing; do
             has "$RELEASE_TAGS" "$t" || fail "release build missing tag $t"
           done
-          grep -q "^${IMAGE}:sha-" <<<"$RELEASE_TAGS" || fail "release build missing sha- tag"
+          # The fixture is an orphan commit, never the triggering commit, so this checks the sha- tag names the
+          # built ref rather than github.sha
+          has "$RELEASE_TAGS" "sha-${FIXTURE_SHA:0:7}" || fail "release build missing sha- tag of the built commit"
+          if has "$RELEASE_TAGS" "sha-${GITHUB_SHA:0:7}"; then fail "sha- tag names the triggering commit"; fi
 
           has "$PRERELEASE_TAGS" 1.3.0-rc.0 || fail "prerelease build missing tag 1.3.0-rc.0"
           for t in 1.3 latest; do
