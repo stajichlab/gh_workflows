@@ -13,6 +13,7 @@ Reusable GitHub Actions workflows for stajichlab repositories.
 | [`release_publish`](#release_publish) | Tag a merged release PR and create the GitHub release |
 | [`sync_dev`](#sync_dev) | Merge the release into the development branch |
 | [`container_build`](#container_build) | Build, smoke-test and push a container image |
+| [`container_cleanup`](#container_cleanup) | Delete old untagged GHCR image versions without breaking tagged images |
 | [`pixi_lock_refresh`](#pixi_lock_refresh) | Refresh `pixi.lock` on Dependabot PRs |
 | [`changelog_check`](#changelog_check) | Require a changelog entry on PRs |
 | [`citation_check`](#citation_check) | Validate `CITATION.cff` |
@@ -543,6 +544,77 @@ The checkout includes full history and tags, so version tools such as versioning
 the build (the `.git` directory must not be excluded by `.dockerignore` for that). The first push of a new GHCR
 image creates it as private; change its visibility in the package settings.
 
+## container_cleanup
+
+Deletes untagged versions of GHCR container packages that have not been updated for `min_age_days` (180 by
+default). Every push leaves untagged versions behind: the previous image when a tag such as `latest` moves, and the
+per-platform and buildx attestation manifests of every image. This removes the old ones safely:
+
+- **Tagged images stay complete.** GHCR lists each platform and attestation manifest of a multi-arch image as its
+  own untagged version, often older than the cutoff. The manifests of all tagged versions, and of untagged versions
+  younger than the cutoff, are read, and everything they reference is kept.
+- **Signatures follow their image.** A Cosign signature tag (`sha256-<digest>`) is kept while its image is kept, and
+  deleted with it (or when the image is already gone). Untagged artifacts attached to a kept image through the OCI
+  `subject` field are kept too.
+- **Fails closed.** If any manifest cannot be read, the job fails before deleting anything.
+
+The step summary lists every deleted (or, with `dry_run: true`, would-be deleted) version. GHCR only; deleted
+versions of organization packages can be restored for 30 days in the package settings.
+
+### Use it when
+
+- `latest` or other moving tags leave a growing list of untagged versions on the package page.
+- You publish multi-arch or signed images, so a plain "delete untagged" cleanup would break them.
+
+### Examples
+
+**Weekly cleanup of the repo's image** (`ghcr.io/<owner>/<repo>`):
+
+```yaml
+# .github/workflows/container-cleanup.yml
+name: Container cleanup
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    uses: stajichlab/gh_workflows/.github/workflows/container_cleanup.yml@v2
+    permissions:
+      contents: read
+      packages: write
+```
+
+**Several packages, previewed first:**
+
+```yaml
+jobs:
+  cleanup:
+    uses: stajichlab/gh_workflows/.github/workflows/container_cleanup.yml@v2
+    permissions:
+      contents: read
+      packages: write
+    with:
+      packages: |
+        mytool
+        mytool-gpu
+      min_age_days: 90
+      dry_run: true
+```
+
+### Reference
+
+| Input | Default | Description |
+|---|---|---|
+| `packages` | repo name (lowercased) | Newline-separated GHCR container package names |
+| `min_age_days` | `180` | Delete untagged versions not updated for at least this many days |
+| `dry_run` | `false` | Only list what would be deleted |
+
+The calling repo's `GITHUB_TOKEN` must have admin access to each package: packages first pushed by the repo's own
+workflows have it; for others, add the repo under **Manage Actions access** in the package settings with the Admin
+role.
+
 ## pixi_lock_refresh
 
 Dependabot bumps dependencies in `pyproject.toml` / `pixi.toml` but does not update `pixi.lock`. This regenerates
@@ -978,4 +1050,7 @@ The first release is `major` from no tags, giving `v1.0.0` and `v1`.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags, then pushes, signs and verifies an unversioned test image and
   deletes it again.
+- `test_container_cleanup.yml` pushes and signs two images under one tag in a throwaway GHCR package, runs
+  `container_cleanup` with `min_age_days: 0` (first as a dry run), checks that the untagged image and its signature
+  are gone while the tagged image, its child manifests and its signature remain, then deletes the package.
 - Dependabot updates the pinned action SHAs monthly.

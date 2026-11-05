@@ -1,0 +1,173 @@
+name: Container cleanup
+
+# Reusable workflow: delete untagged GHCR container image versions that have not changed for min_age_days, without
+# breaking tagged images. GHCR lists every platform manifest and buildx attestation of a multi-arch image as its own
+# untagged version, so the manifests of every kept version are read and everything they reference is kept too.
+# Cosign signature tags (sha256-<digest>) whose image is deleted, or already gone, are deleted with it.
+
+on:
+  workflow_call:
+    inputs:
+      packages:
+        description: "Newline-separated GHCR container package names (e.g. mytool, or tools/mytool); defaults to the repo name (lowercased)"
+        required: false
+        type: string
+        default: ""
+      min_age_days:
+        description: "Delete untagged versions not updated for at least this many days"
+        required: false
+        type: number
+        default: 180
+      dry_run:
+        description: "Only list what would be deleted"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  cleanup:
+    name: Delete old untagged images
+    runs-on: ubuntu-latest
+    concurrency:
+      group: container-cleanup-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Delete old untagged versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PACKAGES: ${{ inputs.packages }}
+          MIN_AGE_DAYS: ${{ inputs.min_age_days }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$MIN_AGE_DAYS" =~ ^[0-9]+$ ]]; then echo "::error::min_age_days must be a whole number"; exit 1; fi
+          cutoff=$(date -u -d "-${MIN_AGE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+
+          if [ "$(gh api "users/${OWNER}" --jq .type)" = Organization ]; then
+            api="orgs/${OWNER}/packages/container"
+          else
+            api="users/${OWNER}/packages/container"
+          fi
+          [ -n "${PACKAGES//[[:space:]]/}" ] || PACKAGES="${REPO,,}"
+
+          work=$(mktemp -d)
+          sig_re='^sha256-[0-9a-f]{64}(\.(sig|att|sbom))?$'
+
+          # Prints a manifest's raw JSON. Aborts the job if it cannot be read, so nothing is deleted on incomplete
+          # information. stdin is closed so the calls cannot eat the input of the loops around them.
+          manifest() {
+            local out
+            if ! out=$(docker buildx imagetools inspect --raw "$1" </dev/null); then
+              echo "::error::Could not read manifest $1; nothing deleted" >&2
+              exit 1
+            fi
+            printf '%s' "$out"
+          }
+
+          # Marks a digest and everything its index references, recursively, as kept
+          declare -A keep
+          keep_closure() {
+            local image=$1 digest=$2 children c
+            [ -n "${keep[$digest]:-}" ] && return 0
+            keep[$digest]=1
+            children=$(manifest "${image}@${digest}" | jq -r '.manifests[]?.digest')
+            for c in $children; do keep_closure "$image" "$c"; done
+          }
+
+          # Prints the image digest a tag set signs, if every tag is a Cosign signature tag (sha256-<hex>[.sig|...])
+          sig_subject() {
+            local t subject=""
+            [ -n "$1" ] || return 0
+            for t in $1; do
+              [[ "$t" =~ $sig_re ]] || return 0
+              subject="sha256:${t:7:64}"
+            done
+            echo "$subject"
+          }
+
+          total=0
+          summary="$work/summary.md"
+          {
+            if [ "$DRY_RUN" = true ]; then echo "### Container cleanup (dry run)"; else echo "### Container cleanup"; fi
+            echo "Untagged versions not updated since ${cutoff} (${MIN_AGE_DAYS} days)."
+          } > "$summary"
+
+          while IFS= read -r pkg; do
+            pkg=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' <<<"$pkg")
+            [ -n "$pkg" ] || continue
+            image="ghcr.io/${OWNER,,}/${pkg}"
+            versions="${api}/${pkg//\//%2F}/versions"
+            echo "::group::${image}"
+
+            # One line per version: id, digest, updated_at, space-separated tags
+            gh api --paginate "${versions}?per_page=100" \
+              --jq '.[] | [.id, .name, .updated_at, (.metadata.container.tags | join(" "))] | @tsv' \
+              </dev/null > "$work/versions.tsv"
+            keep=()
+            declare -A exists=() old_untagged=()
+            while IFS=$'\t' read -r _id digest updated tags; do
+              exists[$digest]=1
+              if [ -z "$tags" ] && [[ "$updated" < "$cutoff" ]]; then old_untagged[$digest]=1; fi
+            done < "$work/versions.tsv"
+
+            # 1. Keep everything referenced by tagged images (signature tags aside) and by recent untagged versions
+            while IFS=$'\t' read -r _id digest _updated tags; do
+              [ -n "${old_untagged[$digest]:-}" ] && continue
+              [ -n "$(sig_subject "$tags")" ] && continue
+              keep_closure "$image" "$digest"
+            done < "$work/versions.tsv"
+
+            # 2. Keep signature tags, with what they reference, whose image is kept; the others are orphaned
+            while IFS=$'\t' read -r _id digest _updated tags; do
+              subject=$(sig_subject "$tags")
+              if [ -n "$subject" ] && [ -n "${exists[$subject]:-}" ] && [ -n "${keep[$subject]:-}" ]; then
+                keep_closure "$image" "$digest"
+              fi
+            done < "$work/versions.tsv"
+
+            # 3. Delete orphaned signature tags, and old untagged versions that are not kept and not attached to a
+            #    kept image through the OCI referrers subject field (signatures on registries without tag fallback)
+            : > "$work/delete.tsv"
+            while IFS=$'\t' read -r id digest updated tags; do
+              [ -n "${keep[$digest]:-}" ] && continue
+              if [ -n "$tags" ]; then
+                [ -n "$(sig_subject "$tags")" ] || continue
+              else
+                [ -n "${old_untagged[$digest]:-}" ] || continue
+                subject=$(manifest "${image}@${digest}" | jq -r '.subject.digest // ""')
+                [ -n "$subject" ] && [ -n "${keep[$subject]:-}" ] && continue
+              fi
+              printf '%s\t%s\t%s\t%s\n' "$id" "$digest" "$updated" "$tags" >> "$work/delete.tsv"
+            done < "$work/versions.tsv"
+
+            count=$(wc -l < "$work/delete.tsv")
+            total=$((total + count))
+            echo "#### \`${image}\`: ${count} of $(wc -l < "$work/versions.tsv") versions" >> "$summary"
+            while IFS=$'\t' read -r id digest updated tags; do
+              echo "- \`${digest}\` (updated ${updated}${tags:+, tag ${tags}})" >> "$summary"
+              if [ "$DRY_RUN" = true ]; then
+                echo "Would delete ${digest} (${updated}) ${tags}"
+              else
+                gh api -X DELETE "${versions}/${id}" --silent </dev/null
+                echo "Deleted ${digest} (${updated}) ${tags}"
+              fi
+            done < "$work/delete.tsv"
+            unset exists old_untagged
+            echo "::endgroup::"
+          done <<<"$PACKAGES"
+
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "${total} version(s) $([ "$DRY_RUN" = true ] && echo 'would be deleted' || echo 'deleted')"

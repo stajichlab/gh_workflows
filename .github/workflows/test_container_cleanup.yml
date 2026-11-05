@@ -1,0 +1,157 @@
+name: Test container_cleanup
+
+# End-to-end test against a throwaway GHCR package: push and sign an image, push and sign a second one under the same
+# tag (leaving the first untagged), then run container_cleanup with min_age_days: 0, first as a dry run. The first
+# image and its orphaned signature must go; the tagged image must stay complete (its untagged platform and
+# attestation manifests are older than the cutoff too) and its signature must still verify. The package is deleted
+# at the end.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/container_cleanup.yml
+      - .github/workflows/test_container_cleanup.yml
+
+concurrency:
+  group: test-container-cleanup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  PACKAGE: container-cleanup-test
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      old: ${{ steps.push.outputs.old }}
+      new: ${{ steps.push.outputs.new }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Each push makes an index with a platform manifest and a buildx provenance attestation
+      - name: Push and sign two images under one tag
+        id: push
+        env:
+          OWNER: ${{ github.repository_owner }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          image="ghcr.io/${OWNER,,}/${PACKAGE}"
+          for which in old new; do
+            dir=$(mktemp -d)
+            printf 'FROM busybox:1.36\nRUN echo %s-%s > /which\n' "$which" "$RUN_ID" > "$dir/Dockerfile"
+            docker buildx build --push --provenance=mode=min --metadata-file "$dir/meta.json" -t "${image}:keep" "$dir"
+            digest=$(jq -r '."containerimage.digest"' "$dir/meta.json")
+            cosign sign --yes "${image}@${digest}"
+            echo "${which}=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+  dry-run:
+    needs: setup
+    uses: ./.github/workflows/container_cleanup.yml
+    with:
+      packages: container-cleanup-test
+      min_age_days: 0
+      dry_run: true
+
+  check-dry-run:
+    needs: [setup, dry-run]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check nothing was deleted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          OLD: ${{ needs.setup.outputs.old }}
+        run: |
+          gh api --paginate "orgs/${OWNER}/packages/container/${PACKAGE}/versions" --jq '.[].name' | grep -qx "$OLD" \
+            || { echo "::error::dry run deleted the old image"; exit 1; }
+
+  cleanup-run:
+    needs: [setup, check-dry-run]
+    uses: ./.github/workflows/container_cleanup.yml
+    with:
+      packages: container-cleanup-test
+      min_age_days: 0
+
+  verify:
+    needs: [setup, cleanup-run]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Check what was deleted and kept
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          OLD: ${{ needs.setup.outputs.old }}
+          NEW: ${{ needs.setup.outputs.new }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          image="ghcr.io/${OWNER,,}/${PACKAGE}"
+          gh api --paginate "orgs/${OWNER}/packages/container/${PACKAGE}/versions" \
+            --jq '.[] | [.name, (.metadata.container.tags | join(" "))] | @tsv' > versions.tsv
+          cat versions.tsv
+          names=$(cut -f1 versions.tsv)
+
+          grep -qx "$OLD" <<<"$names" && fail "old untagged image was not deleted"
+          grep -q "sha256-${OLD#sha256:}" versions.tsv && fail "old image's signature tag was not deleted"
+          grep -qx "$NEW" <<<"$names" || fail "tagged image was deleted"
+          grep -q "sha256-${NEW#sha256:}" versions.tsv || fail "tagged image's signature tag was deleted"
+
+          # Every manifest the tagged index references must still exist
+          for child in $(docker buildx imagetools inspect --raw "${image}@${NEW}" | jq -r '.manifests[].digest'); do
+            grep -qx "$child" <<<"$names" || fail "child manifest ${child} of the tagged image was deleted"
+          done
+          [ "$(docker run --rm "${image}:keep" cat /which)" = "new-${RUN_ID}" ] || fail "keep tag does not run the new image"
+
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${REPO}/.github/workflows/.*" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${image}:keep" > /dev/null || fail "signature of the tagged image no longer verifies"
+
+  cleanup:
+    needs: [setup, dry-run, check-dry-run, cleanup-run, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete test package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if out=$(gh api -X DELETE "orgs/${OWNER}/packages/container/${PACKAGE}" 2>&1); then
+            echo "Deleted ${PACKAGE}"
+          elif grep -q "Not Found" <<<"$out"; then
+            echo "Already gone"
+          else
+            echo "::error::$out"
+            exit 1
+          fi

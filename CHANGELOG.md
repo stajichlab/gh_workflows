@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `container_cleanup`: delete untagged GHCR image versions older than `min_age_days` (default 180), keeping every
+  manifest a tagged or recent image references and deleting Cosign signature tags whose image is gone.
 - `container_build`: `sign` input (default `false`) signs the pushed image index with keyless Cosign (annotated with its `sha-` tag), and a
   `signature` output gives its signature tag. Callers must grant `id-token: write` and `packages: write`.
 
