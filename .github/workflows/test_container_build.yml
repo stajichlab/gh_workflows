@@ -1,7 +1,9 @@
 name: Test container_build
 
 # End-to-end test: build a tiny image from a throwaway orphan branch for a release and a prerelease version, run the
-# smoke test, and check the computed tags. Nothing is pushed to the registry.
+# smoke test, and check the computed tags. The release build also passes sign: true with push: false, which must skip
+# signing. The signed build pushes an unversioned image, signs it with Cosign and verifies the signature; its package
+# versions are deleted again at the end.
 
 on:
   workflow_dispatch:
@@ -18,6 +20,7 @@ concurrency:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 env:
   BASE: test/container-${{ github.run_id }}
@@ -60,6 +63,8 @@ jobs:
       # latest is left at its default (true) so the test covers it
       extra_tags: testing
       push: false
+      # Must be a no-op without push
+      sign: true
 
   prerelease:
     needs: setup
@@ -71,8 +76,22 @@ jobs:
       latest: true
       push: false
 
+  signed:
+    needs: setup
+    uses: ./.github/workflows/container_build.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      image: ghcr.io/${{ github.repository_owner }}/container-build-test
+      extra_tags: signed-${{ github.run_id }}
+      push: true
+      sign: true
+
   verify:
-    needs: [release, prerelease]
+    needs: [release, prerelease, signed]
     runs-on: ubuntu-latest
     steps:
       - name: Check tags
@@ -80,6 +99,9 @@ jobs:
           RELEASE_TAGS: ${{ needs.release.outputs.tags }}
           PRERELEASE_TAGS: ${{ needs.prerelease.outputs.tags }}
           IMAGE: ${{ needs.release.outputs.image }}
+          RELEASE_SIGNATURE: ${{ needs.release.outputs.signature }}
+          SIGNED_DIGEST: ${{ needs.signed.outputs.digest }}
+          SIGNED_SIGNATURE: ${{ needs.signed.outputs.signature }}
         run: |
           fail() { echo "::error::$*"; exit 1; }
           has() { grep -qx "${IMAGE}:$2" <<<"$1"; }
@@ -93,8 +115,29 @@ jobs:
             if has "$PRERELEASE_TAGS" "$t"; then fail "prerelease build must not get tag $t"; fi
           done
 
+          [ -z "$RELEASE_SIGNATURE" ] || fail "sign must be skipped when push is false"
+          [ -n "$SIGNED_DIGEST" ] || fail "signed build has no digest"
+          [ "$SIGNED_SIGNATURE" = "${SIGNED_DIGEST/:/-}" ] || fail "unexpected signature tag: $SIGNED_SIGNATURE"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify signature
+        env:
+          IMAGE: ${{ needs.signed.outputs.image }}
+          TAG: signed-${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          cosign login ghcr.io -u "$ACTOR" --password-stdin <<<"$GH_TOKEN"
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${REPO}/.github/workflows/.*" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}:${TAG}"
+
   cleanup:
-    needs: [setup, release, prerelease, verify]
+    needs: [setup, release, prerelease, signed, verify]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -102,6 +145,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_ID: ${{ github.run_id }}
+          DIGEST: ${{ needs.signed.outputs.digest }}
         run: |
           failed=0
           # Deletes refs/<$1>. A ref that is already gone is fine; any other error fails the job after all deletions
@@ -118,4 +164,16 @@ jobs:
             fi
           }
           delete_ref "heads/${BASE}"
+
+          # Delete the signed test image's index and its signature tag. A failure only warns, so a leftover does not
+          # hide the test result.
+          if [ -n "$DIGEST" ]; then
+            versions="orgs/${OWNER}/packages/container/container-build-test/versions"
+            ids=$(gh api --paginate "$versions" --jq ".[] | select(any(.metadata.container.tags[];
+              . == \"signed-${RUN_ID}\" or . == \"${DIGEST/:/-}\") or .name == \"${DIGEST}\") | .id") || ids=""
+            for id in $ids; do
+              gh api -X DELETE "${versions}/${id}" && echo "Deleted package version $id" \
+                || echo "::warning::Could not delete package version $id"
+            done
+          fi
           exit "$failed"

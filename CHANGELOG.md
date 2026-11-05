@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `container_build`: `sign` input (default `false`) signs the pushed image index with keyless Cosign, and a
+  `signature` output gives its signature tag. Callers must grant `id-token: write` and `packages: write`.
+
 ## [2.0.0] - 2026-11-04
 
 ### Added

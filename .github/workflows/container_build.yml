@@ -2,7 +2,8 @@ name: Container build
 
 # Reusable workflow: build a container image from a ref, smoke-test it locally, then (optionally) push it to GHCR
 # with version, major.minor, latest and extra tags. latest is on by default for stable versioned builds. Prereleases
-# get only their exact version tag, and unversioned builds never get major.minor or latest.
+# get only their exact version tag, and unversioned builds never get major.minor or latest. With sign: true, the pushed
+# image index is signed keyless with Cosign.
 
 on:
   workflow_call:
@@ -62,6 +63,11 @@ on:
         required: false
         type: boolean
         default: true
+      sign:
+        description: "Sign the pushed image index with keyless Cosign (only when push is true). The caller must grant id-token: write and packages: write; verify with cosign verify --certificate-identity-regexp 'https://github.com/<owner>/<repo>/.github/workflows/.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com <image>:<tag>"
+        required: false
+        type: boolean
+        default: false
     secrets:
       registry_username:
         description: "Registry username; defaults to github.actor (enough for GHCR)"
@@ -79,6 +85,9 @@ on:
       digest:
         description: "Digest of the pushed image (empty if not pushed)"
         value: ${{ jobs.build.outputs.digest }}
+      signature:
+        description: "Signature tag of the signed index (its digest with : replaced by -, e.g. sha256-<hex>); empty if not signed"
+        value: ${{ jobs.sign.outputs.signature }}
 
 jobs:
   build:
@@ -92,6 +101,7 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.resolve.outputs.image }}
+      registry: ${{ steps.resolve.outputs.registry }}
       tags: ${{ steps.meta.outputs.tags }}
       digest: ${{ steps.push.outputs.digest }}
 
@@ -230,5 +240,55 @@ jobs:
             if [ "$PUSHED" = true ]; then echo "Pushed (${DIGEST}):"; else echo "Built, not pushed:"; fi
             while IFS= read -r tag; do
               echo "- \`${tag}\`"
+            done <<<"$TAGS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Separate job without a permissions block, so it inherits the caller's grants: requesting id-token: write here would
+  # make every caller grant it, even with sign: false, because GitHub checks nested job permissions before the if.
+  sign:
+    name: Sign container image
+    needs: build
+    if: inputs.sign && inputs.push
+    runs-on: ubuntu-latest
+    outputs:
+      signature: ${{ steps.sign.outputs.signature }}
+    steps:
+      - name: Check OIDC token access
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::sign: true needs 'id-token: write' (and 'packages: write') granted to the calling job"
+            exit 1
+          fi
+
+      - name: Log in to registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ needs.build.outputs.registry }}
+          username: ${{ secrets.registry_username || github.actor }}
+          password: ${{ secrets.registry_password || github.token }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Signs the index digest only, not --recursive: per-platform and attestation manifests would each add a
+      # sha256-<digest> signature tag to the package. Tags resolve to the index, so this one signature verifies them.
+      - name: Sign image index
+        id: sign
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          TAGS: ${{ needs.build.outputs.tags }}
+        run: |
+          if [ -z "$DIGEST" ]; then echo "::error::No pushed digest to sign"; exit 1; fi
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          signature="${DIGEST/:/-}"
+          echo "signature=$signature" >> "$GITHUB_OUTPUT"
+          {
+            echo "Signed with Cosign:"
+            echo "- index digest: \`${DIGEST}\`"
+            echo "- signature tag: \`${IMAGE}:${signature}\`"
+            echo "- tags:"
+            while IFS= read -r tag; do
+              [ -n "$tag" ] && echo "  - \`${tag}\`"
             done <<<"$TAGS"
           } >> "$GITHUB_STEP_SUMMARY"

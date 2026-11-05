@@ -402,6 +402,7 @@ image, then pushes it (to GHCR by default). Tags:
 - You want a test image from a branch without making a release.
 - PRs that touch the `Dockerfile` should prove the image still builds and runs, without pushing anything.
 - You need multi-architecture images or a registry other than GHCR.
+- You want pushed images signed with Cosign (`sign: true`), the same way across repos.
 
 ### Examples
 
@@ -486,6 +487,34 @@ jobs:
       registry_password: ${{ secrets.DOCKERHUB_TOKEN }}
 ```
 
+**Signed release image.** Keyless Cosign signing needs an OIDC token, so the caller must grant `id-token: write`
+as well as `packages: write`:
+
+```yaml
+  container:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      ref: ${{ needs.publish.outputs.tag }}
+      sign: true
+```
+
+Only the pushed image index is signed (no `--recursive`), as in GitHub's Docker publish starter workflow: signing
+each platform and attestation manifest would add a `sha256-<digest>` signature tag apiece to the package. Tags
+resolve to the index, so verify with:
+
+```sh
+cosign verify \
+  --certificate-identity-regexp 'https://github.com/<owner>/<repo>/.github/workflows/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/<owner>/<repo>:1.2.3
+```
+
 ### Reference
 
 | Input | Default | Description |
@@ -501,12 +530,13 @@ jobs:
 | `latest` | `true` | Tag stable versioned builds as `latest`; never prereleases or unversioned builds |
 | `extra_tags` | `""` | Newline-separated extra tags |
 | `push` | `true` | Push; if `false`, only build and smoke-test |
+| `sign` | `false` | Sign the pushed index with keyless Cosign; only with `push`. Caller must grant `id-token: write` and `packages: write` |
 
 | Secret | Description |
 |---|---|
 | `registry_username`, `registry_password` | For registries other than GHCR (e.g. Docker Hub). GHCR uses `GITHUB_TOKEN`. |
 
-Outputs: `image`, `tags`, `digest`.
+Outputs: `image`, `tags`, `digest`, `signature` (the index's signature tag, e.g. `sha256-<hex>`; empty if not signed).
 
 The checkout includes full history and tags, so version tools such as versioningit or setuptools-scm work during
 the build (the `.git` directory must not be excluded by `.dockerignore` for that). The first push of a new GHCR
@@ -698,6 +728,34 @@ jobs:
     uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v1
     with:
       required: true
+```
+
+**Signed release image.** Keyless Cosign signing needs an OIDC token, so the caller must grant `id-token: write`
+as well as `packages: write`:
+
+```yaml
+  container:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      ref: ${{ needs.publish.outputs.tag }}
+      sign: true
+```
+
+Only the pushed image index is signed (no `--recursive`), as in GitHub's Docker publish starter workflow: signing
+each platform and attestation manifest would add a `sha256-<digest>` signature tag apiece to the package. Tags
+resolve to the index, so verify with:
+
+```sh
+cosign verify \
+  --certificate-identity-regexp 'https://github.com/<owner>/<repo>/.github/workflows/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/<owner>/<repo>:1.2.3
 ```
 
 ### Reference
@@ -945,5 +1003,6 @@ The first release is `major` from no tags, giving `v1.0.0` and `v1`.
 - `test_bioconda_recipe_check.yml` copies phyling's live bioconda recipe onto a throwaway orphan branch and checks
   that it is reported as identical. The different-recipe case is not run, since it would open a real issue.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
-  version, runs the smoke test and checks the tags. It never pushes.
+  version, runs the smoke test and checks the tags, then pushes, signs and verifies an unversioned test image and
+  deletes it again.
 - Dependabot updates the pinned action SHAs monthly.
