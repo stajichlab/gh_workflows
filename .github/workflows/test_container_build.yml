@@ -79,7 +79,9 @@ jobs:
       push: false
 
   signed:
-    needs: setup
+    # After the other builds: container_build's concurrency group is per ref, and a third pending job with the same
+    # ref would cancel the queued one
+    needs: [setup, release, prerelease]
     uses: ./.github/workflows/container_build.yml
     permissions:
       contents: read
