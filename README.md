@@ -393,7 +393,7 @@ image, then pushes it (to GHCR by default). Tags:
 | `1.2.3` | a version is given, or `ref` looks like `v1.2.3` |
 | `1.2` | same, but not for prereleases |
 | `latest` | a stable version (not a prerelease), unless `latest: false` |
-| `sha-<short sha>` | always |
+| `sha-<short sha>` | always; the commit that was built (`ref`), not the one that triggered the caller |
 | extra tags | from `extra_tags` |
 
 ### Use it when
@@ -729,35 +729,6 @@ jobs:
     uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v1
     with:
       required: true
-```
-
-**Signed release image.** Keyless Cosign signing needs an OIDC token, so the caller must grant `id-token: write`
-as well as `packages: write`:
-
-```yaml
-  container:
-    needs: publish
-    if: needs.publish.outputs.published == 'true'
-    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    with:
-      ref: ${{ needs.publish.outputs.tag }}
-      sign: true
-```
-
-Only the pushed image index is signed (no `--recursive`), as in GitHub's Docker publish starter workflow: signing
-each platform and attestation manifest would add a `sha256-<digest>` signature tag apiece to the package. Tags
-resolve to the index, so verify with the command below. The signature is annotated with the publish's `sha-` tag
-(`sha=sha-abc1234`); add `-a sha=sha-abc1234` to require it.
-
-```sh
-cosign verify \
-  --certificate-identity-regexp 'https://github.com/<owner>/<repo>/.github/workflows/.*' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/<owner>/<repo>:1.2.3
 ```
 
 ### Reference
