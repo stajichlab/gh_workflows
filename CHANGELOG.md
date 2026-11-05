@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-05
+
 ### Added
 
 - `container_cleanup`: delete untagged GHCR image versions older than `min_age_days` (default 180), keeping every
@@ -71,7 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pin to) and a changelog check on its pull requests (`changelog.yml`).
 - Dependabot updates for the pinned GitHub Actions.
 
-[Unreleased]: https://github.com/stajichlab/gh_workflows/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/stajichlab/gh_workflows/compare/v2.1.0...HEAD
+
+[2.1.0]: https://github.com/stajichlab/gh_workflows/compare/v2.0.0...v2.1.0
 
 [2.0.0]: https://github.com/stajichlab/gh_workflows/compare/v1.0.0...v2.0.0
 
