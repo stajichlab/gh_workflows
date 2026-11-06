@@ -5,7 +5,7 @@ Reusable GitHub Actions workflows for stajichlab repositories.
 ## Workflows in this repo
 
 **Shared** (call these from other repos with
-`uses: stajichlab/gh_workflows/.github/workflows/<file>@v1`):
+`uses: stajichlab/gh_workflows/.github/workflows/<file>@v2`):
 
 | Workflow | Purpose |
 |---|---|
@@ -73,7 +73,7 @@ on:
 
 jobs:
   prepare:
-    uses: stajichlab/gh_workflows/.github/workflows/release_prepare.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/release_prepare.yml@v2
     permissions:
       contents: write
       pull-requests: write
@@ -88,7 +88,7 @@ token so the release PR runs CI:
 ```yaml
 jobs:
   prepare:
-    uses: stajichlab/gh_workflows/.github/workflows/release_prepare.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/release_prepare.yml@v2
     permissions:
       contents: write
       pull-requests: write
@@ -189,7 +189,7 @@ on:
 
 jobs:
   publish:
-    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v2
     permissions:
       contents: write
 ```
@@ -220,7 +220,7 @@ jobs:
 
   publish:
     needs: build
-    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v2
     permissions:
       contents: write
     with:
@@ -229,7 +229,7 @@ jobs:
   container:
     needs: publish
     if: needs.publish.outputs.published == 'true'
-    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
     permissions:
       contents: read
       packages: write
@@ -239,7 +239,7 @@ jobs:
   sync-dev:
     needs: publish
     if: needs.publish.outputs.published == 'true'
-    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v2
     permissions:
       contents: write
       pull-requests: write
@@ -250,7 +250,7 @@ jobs:
 
 ```yaml
   publish:
-    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v2
     permissions:
       contents: write
     with:
@@ -272,7 +272,7 @@ on:
 
 jobs:
   publish:
-    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v2
     permissions:
       contents: write
     with:
@@ -325,14 +325,14 @@ branch and never on `main`. Re-running while that PR is open reuses it.
 ```yaml
 jobs:
   publish:
-    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/release_publish.yml@v2
     permissions:
       contents: write
 
   sync-dev:
     needs: publish
     if: needs.publish.outputs.published == 'true'
-    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v2
     permissions:
       contents: write
       pull-requests: write
@@ -342,7 +342,7 @@ jobs:
 
 ```yaml
   sync-develop:
-    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v2
     permissions:
       contents: write
       pull-requests: write
@@ -365,7 +365,7 @@ on:
 
 jobs:
   sync-dev:
-    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/sync_dev.yml@v2
     permissions:
       contents: write
       pull-requests: write
@@ -415,7 +415,7 @@ exact version:
   container:
     needs: publish
     if: needs.publish.outputs.published == 'true'
-    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
     permissions:
       contents: read
       packages: write
@@ -438,7 +438,7 @@ on:
 
 jobs:
   container:
-    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
     permissions:
       contents: read
       packages: write
@@ -459,7 +459,7 @@ on:
 
 jobs:
   container:
-    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
     permissions:
       contents: read
       packages: write
@@ -474,7 +474,7 @@ jobs:
   container:
     needs: publish
     if: needs.publish.outputs.published == 'true'
-    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/container_build.yml@v2
     permissions:
       contents: read
       packages: write
@@ -544,6 +544,10 @@ Outputs: `image`, `tags`, `digest`, `signature` (the index's signature tag, e.g.
 The checkout includes full history and tags, so version tools such as versioningit or setuptools-scm work during
 the build (the `.git` directory must not be excluded by `.dockerignore` for that). The first push of a new GHCR
 image creates it as private; change its visibility in the package settings.
+
+Builds of the same `ref` queue one at a time (they share a concurrency group, so two builds never push the same
+tags at once). GitHub keeps only one pending run per group: if a third build of that `ref` queues while one runs
+and one waits, the waiting one is cancelled. Chain such builds with `needs:` instead of starting them together.
 
 ## container_cleanup
 
@@ -645,7 +649,7 @@ on:
 
 jobs:
   refresh:
-    uses: stajichlab/gh_workflows/.github/workflows/pixi_lock_refresh.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/pixi_lock_refresh.yml@v2
     permissions:
       contents: write   # Dependabot runs get a read-only token unless the caller grants write
 ```
@@ -661,7 +665,7 @@ on:
 
 jobs:
   refresh:
-    uses: stajichlab/gh_workflows/.github/workflows/pixi_lock_refresh.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/pixi_lock_refresh.yml@v2
     permissions:
       contents: write
     with:
@@ -725,7 +729,7 @@ on:
 
 jobs:
   changelog:
-    uses: stajichlab/gh_workflows/.github/workflows/changelog_check.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/changelog_check.yml@v2
 ```
 
 **Different file and label, more bots skipped, and only for PRs into `dev`:**
@@ -739,7 +743,7 @@ on:
 
 jobs:
   changelog:
-    uses: stajichlab/gh_workflows/.github/workflows/changelog_check.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/changelog_check.yml@v2
     with:
       changelog_path: docs/CHANGELOG.md
       skip_label: no-changelog
@@ -788,7 +792,7 @@ on:
 
 jobs:
   citation:
-    uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v2
 ```
 
 **Require the file**, for repos that must always be citable. It runs on every PR, so deleting the file is caught
@@ -801,7 +805,7 @@ on:
 
 jobs:
   citation:
-    uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v1
+    uses: stajichlab/gh_workflows/.github/workflows/citation_check.yml@v2
     with:
       required: true
 ```
@@ -1080,9 +1084,10 @@ supported.
 
 ## Versioning
 
-Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to
-each new compatible release automatically. Breaking changes get `v2`. Every release is listed in
-[CHANGELOG.md](CHANGELOG.md).
+Pin callers to a major tag (`@v2`). Within `v2`, inputs and outputs stay compatible; the `v2` tag is moved to
+each new compatible release automatically. Breaking changes get `v3`. The `v1` tag still works for existing callers
+but gets no new releases; see the `2.0.0` entry in [CHANGELOG.md](CHANGELOG.md) for what changed. Every release is
+listed in the changelog.
 
 ## Releasing this repo
 
@@ -1094,7 +1099,7 @@ they always run the current code):
 2. Run **Actions → Release** (`release.yml`) with a bump type: `patch` for fixes, `minor` for new workflows or
    inputs, `major` for breaking changes. It opens a `Release v<version>` PR.
 3. Review and merge the PR. `publish.yml` then tags `v<version>` and creates the GitHub release (via
-   `release_publish`), and a second job moves `v<major>` (e.g. `v1`) to it, so callers pinned to `@v1` get the
+   `release_publish`), and a second job moves `v<major>` (e.g. `v2`) to it, so callers pinned to `@v2` get the
    release. Prereleases, and a patch to an older minor version, leave `v<major>` where it is.
 
 The first release is `major` from no tags, giving `v1.0.0` and `v1`.
