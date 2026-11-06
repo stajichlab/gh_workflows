@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `container_cleanup`: no longer fails when GHCR lists an untagged version, or an index references a manifest, that
+  the registry no longer serves ("not found"); these are reported as warnings and left alone. Other registry
+  errors, and a missing tagged version, still stop the job before anything is deleted.
+
 ### Changed
 
 - `bioconda_recipe_check` no longer opens, updates or closes an issue. When the recipes differ the job fails (diff in

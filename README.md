@@ -556,7 +556,9 @@ per-platform and buildx attestation manifests of every image. This removes the o
 - **Signatures follow their image.** A Cosign signature tag (`sha256-<digest>`) is kept while its image is kept, and
   deleted with it (or when the image is already gone). Untagged artifacts attached to a kept image through the OCI
   `subject` field are kept too.
-- **Fails closed.** If any manifest cannot be read, the job fails before deleting anything.
+- **Fails closed.** If a manifest cannot be read, or a tagged version is missing from the registry, the job fails
+  before deleting anything. Untagged versions and child manifests that GHCR lists or references but no longer
+  serves are reported as warnings and never deleted.
 
 The step summary lists every deleted (or, with `dry_run: true`, would-be deleted) version. GHCR only; deleted
 versions of organization packages can be restored for 30 days in the package settings.

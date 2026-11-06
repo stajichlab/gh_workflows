@@ -66,25 +66,41 @@ jobs:
           work=$(mktemp -d)
           sig_re='^sha256-[0-9a-f]{64}(\.(sig|att|sbom))?$'
 
-          # Prints a manifest's raw JSON. Aborts the job if it cannot be read, so nothing is deleted on incomplete
-          # information. stdin is closed so the calls cannot eat the input of the loops around them.
+          # Prints a manifest's raw JSON. Returns 2 if the registry says it does not exist (GHCR can list versions,
+          # or indexes can reference manifests, that are gone); any other error aborts the job, so nothing is deleted
+          # on incomplete information. stdin is closed so the calls cannot eat the input of the loops around them.
           manifest() {
             local out
-            if ! out=$(docker buildx imagetools inspect --raw "$1" </dev/null); then
+            if out=$(docker buildx imagetools inspect --raw "$1" 2>"$work/err" </dev/null); then
+              printf '%s' "$out"
+            elif grep -qiE 'not found|manifest unknown' "$work/err"; then
+              return 2
+            else
+              cat "$work/err" >&2
               echo "::error::Could not read manifest $1; nothing deleted" >&2
-              exit 1
+              return 1
             fi
-            printf '%s' "$out"
           }
 
-          # Marks a digest and everything its index references, recursively, as kept
+          # Marks a digest and everything its index references, recursively, as kept. A tagged version's manifest
+          # must exist (if not, something such as the package name is wrong, so stop); a missing untagged or child
+          # manifest is only reported.
           declare -A keep
           keep_closure() {
-            local image=$1 digest=$2 children c
+            local image=$1 digest=$2 what=$3 raw rc=0 c
             [ -n "${keep[$digest]:-}" ] && return 0
             keep[$digest]=1
-            children=$(manifest "${image}@${digest}" | jq -r '.manifests[]?.digest')
-            for c in $children; do keep_closure "$image" "$c"; done
+            raw=$(manifest "${image}@${digest}") || rc=$?
+            if [ "$rc" = 2 ] && [ "$what" = tagged ]; then
+              echo "::error::Tagged version ${image}@${digest} not found in the registry; nothing deleted"
+              exit 1
+            elif [ "$rc" = 2 ]; then
+              echo "::warning::Manifest ${image}@${digest} (${what}) not found in the registry; skipped"
+              return 0
+            elif [ "$rc" != 0 ]; then
+              exit 1
+            fi
+            for c in $(jq -r '.manifests[]?.digest' <<<"$raw"); do keep_closure "$image" "$c" "child of ${digest}"; done
           }
 
           # Prints the image digest a tag set signs, if every tag is a Cosign signature tag (sha256-<hex>[.sig|...])
@@ -127,14 +143,14 @@ jobs:
             while IFS=$'\t' read -r _id digest _updated tags; do
               [ -n "${old_untagged[$digest]:-}" ] && continue
               [ -n "$(sig_subject "$tags")" ] && continue
-              keep_closure "$image" "$digest"
+              keep_closure "$image" "$digest" "$([ -n "$tags" ] && echo tagged || echo 'recent untagged version')"
             done < "$work/versions.tsv"
 
             # 2. Keep signature tags, with what they reference, whose image is kept; the others are orphaned
             while IFS=$'\t' read -r _id digest _updated tags; do
               subject=$(sig_subject "$tags")
               if [ -n "$subject" ] && [ -n "${exists[$subject]:-}" ] && [ -n "${keep[$subject]:-}" ]; then
-                keep_closure "$image" "$digest"
+                keep_closure "$image" "$digest" tagged
               fi
             done < "$work/versions.tsv"
 
@@ -147,7 +163,16 @@ jobs:
                 [ -n "$(sig_subject "$tags")" ] || continue
               else
                 [ -n "${old_untagged[$digest]:-}" ] || continue
-                subject=$(manifest "${image}@${digest}" | jq -r '.subject.digest // ""')
+                # Never delete what cannot be inspected: it might belong to a kept image
+                rc=0
+                raw=$(manifest "${image}@${digest}") || rc=$?
+                if [ "$rc" = 2 ]; then
+                  echo "::warning::Untagged version ${image}@${digest} is listed but not found in the registry; not deleted"
+                  continue
+                elif [ "$rc" != 0 ]; then
+                  exit 1
+                fi
+                subject=$(jq -r '.subject.digest // ""' <<<"$raw")
                 [ -n "$subject" ] && [ -n "${keep[$subject]:-}" ] && continue
               fi
               printf '%s\t%s\t%s\t%s\n' "$id" "$digest" "$updated" "$tags" >> "$work/delete.tsv"
