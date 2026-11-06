@@ -19,6 +19,7 @@ Reusable GitHub Actions workflows for stajichlab repositories.
 | [`citation_check`](#citation_check) | Validate `CITATION.cff` |
 | [`python_test_pip` / `_conda` / `_pixi`](#python_test) | Run Python tests with pip, conda or pixi |
 | [`bioconda_recipe_check`](#bioconda_recipe_check) | Fail (red badge) when the repo's conda recipe differs from bioconda's |
+| [`bioconda_recipe_solve`](#bioconda_recipe_solve) | Check a noarch Python recipe's run requirements install on every supported Python |
 
 > [!NOTE]
 > **For this repo only, not for callers:** `release.yml`, `publish.yml`, `changelog.yml`, `lint.yml` and the
@@ -1011,6 +1012,72 @@ Add `?branch=main` to the badge URL if the workflow also runs on other branches.
 
 Needs only `contents: read`. When the recipes differ the job fails and the diff appears in the run's job summary.
 
+## bioconda_recipe_solve
+
+Checks that a noarch Python conda recipe can actually be installed. It does a dry-run solve (nothing is downloaded)
+of the recipe's `run` requirements from conda-forge and bioconda, once per supported Python, with glibc pinned to
+bioconda's build image (2.17). The job fails if any Python cannot be solved, and the job summary lists the result
+per Python. This catches what bioconda's CI would reject: a dependency with no build for one of your Pythons, or one
+that needs a newer glibc.
+
+It complements [`bioconda_recipe_check`](#bioconda_recipe_check): that one reports drift from bioconda's copy, this
+one reports a recipe that cannot be installed.
+
+### Use it when
+
+- Your package is noarch Python on bioconda and you want to know before submitting that its dependencies resolve
+  on every Python you claim to support.
+- As a gate before tagging a release.
+
+### Examples
+
+**On recipe or Python range changes, and before a release:**
+
+```yaml
+# .github/workflows/recipe-solve.yml
+name: Recipe solve
+on:
+  push:
+    branches: [main]
+    paths: ["bioconda/meta.yaml", "pyproject.toml"]
+  pull_request:
+    paths: ["bioconda/meta.yaml", "pyproject.toml"]
+  workflow_dispatch:
+  workflow_call:   # so a publish workflow can call it before tagging
+
+jobs:
+  solve:
+    uses: stajichlab/gh_workflows/.github/workflows/bioconda_recipe_solve.yml@v2
+    permissions:
+      contents: read
+    with:
+      recipe_path: bioconda/meta.yaml
+```
+
+### Reference
+
+| Input | Default | Description |
+|---|---|---|
+| `recipe_path` | `bioconda/meta.yaml` | Path to the recipe in your repo |
+| `python_versions` | from the recipe | Space-separated Pythons to solve for, e.g. `"3.11 3.12"` |
+| `glibc` | `2.17` | glibc version to solve against (`CONDA_OVERRIDE_GLIBC`) |
+| `ref` | triggering commit | Branch, tag or commit to read the recipe from |
+
+| Output | Description |
+|---|---|
+| `failed` | Space-separated Pythons that could not be solved (empty if all solved) |
+
+Needs only `contents: read`.
+
+**Python versions.** Unless `python_versions` is given, they are every minor version allowed by the `python
+>=3.X,<3.Y` line under `run:`, which may be written out (`python >=3.10,<3.15`) or use `{% set %}` variables
+(`python >={{ python_min }},<{{ python_max }}`).
+
+**Limits.** The recipe is read with simple text parsing, not rendered: only `{% set x = "..." %}` variables
+substituted into `{{ x }}` are understood, and selectors (`# [py<311]`) are dropped as comments. Only `run`
+requirements are solved, so it suits noarch Python recipes, not compiled ones. `recipe.yaml` (rattler-build) is not
+supported.
+
 ## Versioning
 
 Pin callers to a major tag (`@v1`). Within `v1`, inputs and outputs stay compatible; the `v1` tag is moved to
@@ -1057,6 +1124,9 @@ The first release is `major` from no tags, giving `v1.0.0` and `v1`.
   environment and Python version.
 - `test_bioconda_recipe_check.yml` copies phyling's live bioconda recipe onto a throwaway orphan branch and checks
   that it is reported as identical. The different-recipe case is not run, since the failing job would fail the test.
+- `test_bioconda_recipe_solve.yml` commits phyling's live bioconda recipe and a small recipe that uses
+  `{% set python_min/python_max %}` to a throwaway orphan branch and checks that both solve (the second also with an
+  explicit `python_versions`). The unsolvable case is not run, since the failing job would fail the test.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags, then pushes, signs and verifies an unversioned test image and
   deletes it again.

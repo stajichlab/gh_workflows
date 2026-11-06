@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the registry no longer serves ("not found"); these are reported as warnings and left alone. Other registry
   errors, and a missing tagged version, still stop the job before anything is deleted.
 
+### Added
+
+- `bioconda_recipe_solve`: dry-run solve a noarch Python recipe's run requirements on every supported Python with
+  glibc 2.17, failing if any cannot be installed.
+
 ### Changed
 
 - `bioconda_recipe_check` no longer opens, updates or closes an issue. When the recipes differ the job fails (diff in

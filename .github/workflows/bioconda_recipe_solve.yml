@@ -1,0 +1,138 @@
+name: Bioconda recipe solve
+
+# Reusable workflow: check that a noarch Python conda recipe can be installed. It does a dry-run solve of the
+# recipe's `run` requirements (nothing is downloaded) from conda-forge and bioconda, once per supported Python, with
+# glibc pinned to bioconda's build image (2.17 by default). Catches a dependency with no build for a supported Python,
+# or one that needs a newer glibc. The job fails if any Python cannot be solved. Needs only `contents: read`.
+#
+# The recipe is read with simple text parsing, not rendered: `{% set x = "..." %}` variables are substituted into
+# `{{ x }}`, and other Jinja is not supported. Python versions come from the `python_versions` input or else from the
+# `python >=3.X,<3.Y` line under `run:`.
+
+on:
+  workflow_call:
+    inputs:
+      recipe_path:
+        description: "Path to the recipe (meta.yaml) in the calling repo"
+        required: false
+        type: string
+        default: bioconda/meta.yaml
+      python_versions:
+        description: "Space-separated Python versions to solve for (e.g. \"3.11 3.12\"); defaults to every minor version allowed by the run requirement on python (>=3.X,<3.Y)"
+        required: false
+        type: string
+        default: ""
+      glibc:
+        description: "glibc version to solve against (CONDA_OVERRIDE_GLIBC)"
+        required: false
+        type: string
+        default: "2.17"
+      ref:
+        description: "Branch, tag or commit to read the recipe from; defaults to the commit that triggered the caller"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      failed:
+        description: "Space-separated Python versions that could not be solved (empty if all solved)"
+        value: ${{ jobs.solve.outputs.failed }}
+
+jobs:
+  solve:
+    name: Solve recipe (glibc ${{ inputs.glibc }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      failed: ${{ steps.solve.outputs.failed }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout recipe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          sparse-checkout: ${{ inputs.recipe_path }}
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Install micromamba
+        uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          init-shell: none
+
+      - name: Read run requirements
+        env:
+          RECIPE: ${{ inputs.recipe_path }}
+          PYTHONS: ${{ inputs.python_versions }}
+        run: |
+          python3 - "$RECIPE" > "$RUNNER_TEMP/solve.env" <<'PY'
+          import os, re, shlex, sys
+
+          def fail(msg):
+              print(f"::error::{msg}", file=sys.stderr)
+              sys.exit(1)
+
+          text = open(sys.argv[1]).read()
+          var = dict(re.findall(r'{%-?\s*set\s+(\w+)\s*=\s*["\']([^"\']*)["\']\s*-?%}', text))
+          text = re.sub(r"{{\s*(\w+)\s*}}", lambda m: var.get(m.group(1), m.group(0)), text)
+          m = re.search(r"^([ \t]*)run:[ \t]*\n((?:\1[ \t]+.*\n|[ \t]*\n)+)", text, re.M)
+          if not m:
+              fail("no requirements/run section found in the recipe")
+          deps = []
+          for line in m.group(2).splitlines():
+              line = line.split("#")[0].strip()
+              if line.startswith("- "):
+                  deps.append(line[2:].strip())
+          unresolved = [d for d in deps if "{{" in d or "{%" in d]
+          if unresolved:
+              fail(f"unresolved Jinja in run requirements: {unresolved}; set the variable in the recipe or pass python_versions")
+          py = [d for d in deps if d.split()[0] == "python"]
+          deps = [d for d in deps if d.split()[0] != "python"]
+
+          pythons = os.environ.get("PYTHONS", "").split()
+          if not pythons:
+              spec = py[0].split(None, 1)[1].replace(" ", "") if py and len(py[0].split()) > 1 else ""
+              lo = re.search(r">=3\.(\d+)", spec)
+              hi = re.search(r"<3\.(\d+)", spec)
+              if not (lo and hi):
+                  fail(f"cannot read a python >=3.X,<3.Y range from run requirements ({py or 'none'}); pass python_versions")
+              pythons = [f"3.{v}" for v in range(int(lo.group(1)), int(hi.group(1)))]
+          if not pythons:
+              fail("no Python versions to solve for")
+          print("PYTHONS=" + shlex.quote(" ".join(pythons)))
+          print("DEPS=(" + " ".join(shlex.quote(d) for d in deps) + ")")
+          PY
+          cat "$RUNNER_TEMP/solve.env"
+
+      - name: Solve per Python
+        id: solve
+        env:
+          CONDA_OVERRIDE_GLIBC: ${{ inputs.glibc }}
+          RECIPE: ${{ inputs.recipe_path }}
+        run: |
+          source "$RUNNER_TEMP/solve.env"
+          failed=""
+          {
+            echo "### Solve of \`${RECIPE}\` run requirements (glibc ${CONDA_OVERRIDE_GLIBC})"
+            echo
+            echo "| Python | Result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for py in $PYTHONS; do
+            echo "::group::python=$py"
+            if micromamba create -n "solve-$py" --dry-run -y --override-channels -c conda-forge -c bioconda \
+                "python=$py" "${DEPS[@]}"; then
+              echo "::endgroup::"
+              echo "| $py | solved |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::endgroup::"
+              echo "::error::run requirements cannot be installed on Python $py with glibc ${CONDA_OVERRIDE_GLIBC}"
+              echo "| $py | **cannot be solved** |" >> "$GITHUB_STEP_SUMMARY"
+              failed="$failed $py"
+            fi
+          done
+          echo "failed=${failed# }" >> "$GITHUB_OUTPUT"
+          [ -z "$failed" ] || { echo "Unsolvable on Python:$failed"; exit 1; }

@@ -1,0 +1,126 @@
+name: Test bioconda_recipe_solve
+
+# End-to-end test: commit phyling's live bioconda recipe (python range written out literally) and a small recipe that
+# takes its range from {% set python_min/python_max %} variables to a throwaway orphan branch, and run
+# bioconda_recipe_solve on both; each must solve on every Python. The unsolvable case is not run, since the called
+# job would fail this workflow. The branch is deleted afterwards.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/bioconda_recipe_solve.yml
+      - .github/workflows/test_bioconda_recipe_solve.yml
+
+concurrency:
+  group: test-bioconda-recipe-solve
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  BASE: test/bioconda-solve-${{ github.run_id }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.fixture.outputs.ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create fixture branch
+        id: fixture
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$BASE"
+          mkdir literal vars
+          curl -fsSL https://raw.githubusercontent.com/bioconda/bioconda-recipes/master/recipes/phyling/meta.yaml \
+            -o literal/meta.yaml
+          cat > vars/meta.yaml <<'YAML'
+          {% set name = "fixture" %}
+          {% set python_min = "3.11" %}
+          {% set python_max = "3.13" %}
+
+          package:
+            name: {{ name }}
+            version: "0.0.1"
+
+          requirements:
+            host:
+              - python {{ python_min }}
+            run:
+              - python >={{ python_min }},<{{ python_max }}
+              - biopython >=1.81  # comment is ignored
+              - samtools
+
+          test:
+            commands:
+              - true
+          YAML
+          git add literal vars
+          git commit -m "Test fixture"
+          git push origin "$BASE"
+          echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+
+  literal:
+    needs: setup
+    uses: ./.github/workflows/bioconda_recipe_solve.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      recipe_path: literal/meta.yaml
+
+  vars:
+    needs: setup
+    uses: ./.github/workflows/bioconda_recipe_solve.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      recipe_path: vars/meta.yaml
+
+  explicit:
+    needs: setup
+    uses: ./.github/workflows/bioconda_recipe_solve.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.setup.outputs.ref }}
+      recipe_path: vars/meta.yaml
+      python_versions: "3.12"
+
+  verify:
+    needs: [literal, vars, explicit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        env:
+          FAILED: ${{ needs.literal.outputs.failed }}${{ needs.vars.outputs.failed }}${{ needs.explicit.outputs.failed }}
+        run: |
+          [ -z "$FAILED" ] || { echo "::error::solvable recipes reported unsolvable on: $FAILED"; exit 1; }
+          echo "All fixtures solved"
+
+  cleanup:
+    needs: [setup, literal, vars, explicit, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete fixture branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if out=$(gh api -X DELETE "repos/${REPO}/git/refs/heads/${BASE}" 2>&1); then
+            echo "Deleted ${BASE}"
+          elif grep -q "Reference does not exist" <<<"$out"; then
+            echo "Already gone: ${BASE}"
+          else
+            echo "::error::Could not delete ${BASE}: $out"
+            exit 1
+          fi
