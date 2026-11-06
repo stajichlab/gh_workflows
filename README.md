@@ -18,7 +18,7 @@ Reusable GitHub Actions workflows for stajichlab repositories.
 | [`changelog_check`](#changelog_check) | Require a changelog entry on PRs |
 | [`citation_check`](#citation_check) | Validate `CITATION.cff` |
 | [`python_test_pip` / `_conda` / `_pixi`](#python_test) | Run Python tests with pip, conda or pixi |
-| [`bioconda_recipe_check`](#bioconda_recipe_check) | Open an issue when the repo's conda recipe differs from bioconda's |
+| [`bioconda_recipe_check`](#bioconda_recipe_check) | Fail (red badge) when the repo's conda recipe differs from bioconda's |
 
 > [!NOTE]
 > **For this repo only, not for callers:** `release.yml`, `publish.yml`, `changelog.yml`, `lint.yml` and the
@@ -953,9 +953,10 @@ Installer-specific inputs:
 ## bioconda_recipe_check
 
 Checks that the conda recipe kept in your repo is identical to the one in
-[bioconda-recipes](https://github.com/bioconda/bioconda-recipes). If they differ, it opens an issue with the diff
-(or updates the open one); once they match again, it closes the issue. It only reports: the maintainer opens the
-bioconda-recipes PR by hand.
+[bioconda-recipes](https://github.com/bioconda/bioconda-recipes). If they differ, the job fails and the diff is
+written to the job summary; it passes again once they match. No issue is opened: put the calling workflow's status
+badge in your README and it shows the state at a glance. It only reports: the maintainer opens the bioconda-recipes PR
+by hand.
 
 The comparison is exact, line for line, so any difference is reported, including a version bump that bioconda's
 autobump PR has not merged yet.
@@ -981,11 +982,18 @@ jobs:
     uses: stajichlab/gh_workflows/.github/workflows/bioconda_recipe_check.yml@v2
     permissions:
       contents: read
-      issues: write
     with:
       recipe_path: conda/meta.yaml
       bioconda_recipe_path: recipes/phyling/meta.yaml   # only if not recipes/<repo name>/meta.yaml
 ```
+
+**Badge** for your README (the file name is the calling workflow's, not this one's):
+
+```markdown
+[![Bioconda recipe](https://github.com/OWNER/REPO/actions/workflows/bioconda-check.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/bioconda-check.yml)
+```
+
+Add `?branch=main` to the badge URL if the workflow also runs on other branches.
 
 ### Reference
 
@@ -999,7 +1007,7 @@ jobs:
 |---|---|
 | `differs` | `true` if the recipes differ, `false` if they are identical |
 
-Needs `issues: write` (and `contents: read`). The diff also appears in the run's job summary.
+Needs only `contents: read`. When the recipes differ the job fails and the diff appears in the run's job summary.
 
 ## Versioning
 
@@ -1046,7 +1054,7 @@ The first release is `major` from no tags, giving `v1.0.0` and `v1`.
   two Python versions and a fake tool from an artifact on `PATH`). The test commands check that they run inside the right
   environment and Python version.
 - `test_bioconda_recipe_check.yml` copies phyling's live bioconda recipe onto a throwaway orphan branch and checks
-  that it is reported as identical. The different-recipe case is not run, since it would open a real issue.
+  that it is reported as identical. The different-recipe case is not run, since the failing job would fail the test.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags, then pushes, signs and verifies an unversioned test image and
   deletes it again.

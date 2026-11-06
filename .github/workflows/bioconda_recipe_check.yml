@@ -1,8 +1,9 @@
 name: Bioconda recipe check
 
 # Reusable workflow: check that the conda recipe kept in the calling repo is identical to the one in
-# bioconda/bioconda-recipes. If they differ, open an issue with the diff (or update the open one); once they match
-# again, close it. It only reports: the maintainer opens the bioconda-recipes PR by hand. Needs `issues: write`.
+# bioconda/bioconda-recipes. If they differ, the job fails (with the diff in the job summary), so the caller's
+# workflow status badge in its README turns red until they match again. No issue is opened. It only reports: the
+# maintainer opens the bioconda-recipes PR by hand. Needs only `contents: read`.
 
 on:
   workflow_call:
@@ -32,7 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
     outputs:
       differs: ${{ steps.compare.outputs.differs }}
     defaults:
@@ -75,29 +75,10 @@ jobs:
           fi
           cat "$report" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Open, update or close the issue
+      - name: Fail if the recipes differ
+        if: steps.compare.outputs.differs == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          DIFFERS: ${{ steps.compare.outputs.differs }}
           RECIPE: ${{ inputs.recipe_path }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Conda recipe differs from bioconda: ${RECIPE}"
-          existing=$(gh issue list --state open --search "in:title \"${title}\"" --json number,title \
-            | jq -r --arg t "$title" '.[] | select(.title == $t) | .number' | head -n1)
-
-          if [ "$DIFFERS" != true ]; then
-            if [ -n "$existing" ]; then
-              gh issue close "$existing" --comment "The recipes are identical again ([run](${RUN_URL}))."
-            fi
-            exit 0
-          fi
-
-          body="$RUNNER_TEMP/issue.md"
-          { cat "$RUNNER_TEMP/report.md"; echo; echo "Found by [this run](${RUN_URL})."; } > "$body"
-          if [ -n "$existing" ]; then
-            gh issue edit "$existing" --body-file "$body"
-          else
-            gh issue create --title "$title" --body-file "$body"
-          fi
+          echo "::error::${RECIPE} differs from the bioconda recipe; see the job summary for the diff"
+          exit 1

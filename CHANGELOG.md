@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `bioconda_recipe_check` no longer opens, updates or closes an issue. When the recipes differ the job fails (diff in
+  the job summary), so the caller's workflow status badge shows it; it needs only `contents: read` now.
+
 ## [2.1.0] - 2026-11-05
 
 ### Added

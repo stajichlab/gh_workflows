@@ -1,8 +1,8 @@
 name: Test bioconda_recipe_check
 
 # End-to-end test: commit an exact copy of phyling's live bioconda recipe to a throwaway orphan branch and run
-# bioconda_recipe_check against it, which must report the recipes as identical (so no issue is opened). The
-# different-recipe case is not run, since it would open a real issue here. The branch is deleted afterwards.
+# bioconda_recipe_check against it, which must report the recipes as identical (and pass). The
+# different-recipe case is not run, since the called job would fail this workflow. The branch is deleted afterwards.
 
 on:
   workflow_dispatch:
@@ -50,7 +50,6 @@ jobs:
     uses: ./.github/workflows/bioconda_recipe_check.yml
     permissions:
       contents: read
-      issues: write
     with:
       ref: ${{ needs.setup.outputs.ref }}
       recipe_path: recipe/meta.yaml
