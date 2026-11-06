@@ -1,8 +1,9 @@
 name: Test bioconda_recipe_solve
 
-# End-to-end test: commit phyling's live bioconda recipe (python range written out literally) and a small recipe that
-# takes its range from {% set python_min/python_max %} variables to a throwaway orphan branch, and run
-# bioconda_recipe_solve on both; each must solve on every Python. The unsolvable case is not run, since the called
+# End-to-end test: commit two small fixed recipes to a throwaway orphan branch, one with its python range written out
+# literally and one taking it from {% set python_min/python_max %} variables, and run bioconda_recipe_solve on both;
+# each must solve on every Python. Fixed fixtures rather than a live bioconda recipe, whose dependencies may lag a
+# new Python and fail the test for reasons outside this repo. The unsolvable case is not run, since the called
 # job would fail this workflow. The branch is deleted afterwards.
 
 on:
@@ -39,8 +40,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --orphan "$BASE"
           mkdir literal vars
-          curl -fsSL https://raw.githubusercontent.com/bioconda/bioconda-recipes/master/recipes/phyling/meta.yaml \
-            -o literal/meta.yaml
+          cat > literal/meta.yaml <<'YAML'
+          package:
+            name: fixture
+            version: "0.0.1"
+
+          requirements:
+            run:
+              - python >=3.11,<3.13
+              - biopython >=1.81
+              - samtools
+          YAML
           cat > vars/meta.yaml <<'YAML'
           {% set name = "fixture" %}
           {% set python_min = "3.11" %}

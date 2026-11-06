@@ -1129,8 +1129,8 @@ The first release is `major` from no tags, giving `v1.0.0` and `v1`.
   environment and Python version.
 - `test_bioconda_recipe_check.yml` copies phyling's live bioconda recipe onto a throwaway orphan branch and checks
   that it is reported as identical. The different-recipe case is not run, since the failing job would fail the test.
-- `test_bioconda_recipe_solve.yml` commits phyling's live bioconda recipe and a small recipe that uses
-  `{% set python_min/python_max %}` to a throwaway orphan branch and checks that both solve (the second also with an
+- `test_bioconda_recipe_solve.yml` commits two small fixed recipes, one with a literal `python >=3.X,<3.Y` and one
+  using `{% set python_min/python_max %}`, to a throwaway orphan branch and checks that both solve (the second also with an
   explicit `python_versions`). The unsolvable case is not run, since the failing job would fail the test.
 - `test_container_build.yml` builds a tiny image from a throwaway orphan branch for a release and a prerelease
   version, runs the smoke test and checks the tags, then pushes, signs and verifies an unversioned test image and
